@@ -1,0 +1,32 @@
+# Weblink 前端镜像（内网离线版）
+# 不在构建时写入信令地址：页面启动时由 entrypoint 把 VITE_WEBSOCKET_URL 写进 index.html，
+# 同一镜像可用于不同内网域名/IP。STUN/TURN 默认值在构建时写入。
+FROM oven/bun:1.4.2 AS base
+WORKDIR /app
+
+FROM base AS install
+COPY package.json bun.lock bunfig.toml ./
+COPY apps/web/package.json apps/web/package.json
+COPY apps/desktop/package.json apps/desktop/package.json
+COPY packages/platform/package.json packages/platform/package.json
+COPY servers/weblink-ws-server/package.json servers/weblink-ws-server/package.json
+COPY servers/weblink-ws-worker/package.json servers/weblink-ws-worker/package.json
+RUN HUSKY=0 bun install --frozen-lockfile --filter weblink-workspace --filter @weblink/web
+
+FROM base AS build
+COPY --from=install /app/ ./
+COPY . .
+
+ARG WEBLINK_STUN_SERVERS
+ARG VITE_TURN_SERVERS
+
+RUN test -n "$WEBLINK_STUN_SERVERS" && bun run build
+
+FROM nginx:1.28-alpine
+COPY --from=build /app/apps/web/dist /usr/share/nginx/html
+COPY docker/nginx.conf.template /etc/nginx/nginx.conf.template
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 80 443
+ENTRYPOINT ["entrypoint.sh"]

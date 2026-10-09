@@ -1,0 +1,35 @@
+services:
+  web:
+    image: weblink-web:${VER}
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      # 浏览器连接信令用的地址，容器启动时写入页面
+      - VITE_WEBSOCKET_URL=${VITE_WEBSOCKET_URL}
+    volumes:
+      - ./conf/nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./conf/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - ws-server
+
+  ws-server: # 服务名不可改，nginx 按此名反代
+    image: weblink-ws:${VER}
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=info
+      - HOSTNAME=0.0.0.0
+      - PORT=9000
+      - HEARTBEAT_INTERVAL=30000
+      - PONG_TIMEOUT=60000
+      - DISCONNECT_TIMEOUT=90000
+    expose:
+      - "9000"
+
+  coturn:
+    image: coturn/coturn:${COTURN_VER}
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./conf/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro

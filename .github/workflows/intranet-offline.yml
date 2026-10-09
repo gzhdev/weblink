@@ -1,0 +1,157 @@
+name: Intranet offline package
+
+on:
+  push:
+    branches:
+      - intranet-deploy
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 目标服务器架构
+        type: choice
+        options:
+          - all
+          - amd64
+          - arm64
+        default: all
+      stun_servers:
+        description: 写入前端的默认 STUN，逗号分隔（留空用仓库变量 INTRANET_STUN_SERVERS）
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intranet-offline-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COTURN_VER: 4.6.3
+  # 前端默认 STUN：手动输入 > 仓库变量 > 内置示例
+  STUN_SERVERS: ${{ inputs.stun_servers || vars.INTRANET_STUN_SERVERS || 'stun:10.0.0.10:3478' }}
+
+jobs:
+  prepare:
+    name: Select architectures
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          ARCH: ${{ inputs.arch || 'all' }}
+        run: |
+          case "$ARCH" in
+            amd64) m='[{"arch":"amd64","runner":"ubuntu-24.04"}]' ;;
+            arm64) m='[{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' ;;
+            *)     m='[{"arch":"amd64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' ;;
+          esac
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Resolve version
+        id: meta
+        run: |
+          ver=$(jq -r .version apps/web/package.json)
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "pkg=weblink-offline-${ver}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build web image
+        env:
+          TURN_SERVERS: ${{ secrets.INTRANET_TURN_SERVERS || 'turn:10.0.0.10:3478|weblink|ChangeMe-Strong|longterm' }}
+        run: |
+          docker build \
+            -f deploy/offline/Dockerfile.web \
+            --build-arg WEBLINK_STUN_SERVERS="$STUN_SERVERS" \
+            --build-arg VITE_TURN_SERVERS="$TURN_SERVERS" \
+            -t "weblink-web:${{ steps.meta.outputs.ver }}" .
+
+      - name: Build signaling image
+        run: |
+          docker build \
+            -t "weblink-ws:${{ steps.meta.outputs.ver }}" \
+            servers/weblink-ws-server
+
+      - name: Pull coturn image
+        run: docker pull --platform "linux/${{ matrix.arch }}" "coturn/coturn:${COTURN_VER}"
+
+      - name: Check images
+        env:
+          VER: ${{ steps.meta.outputs.ver }}
+        run: |
+          for img in "weblink-web:$VER" "weblink-ws:$VER" "coturn/coturn:$COTURN_VER"; do
+            arch=$(docker image inspect -f '{{.Architecture}}' "$img")
+            echo "$img -> $arch"
+            test "$arch" = "${{ matrix.arch }}"
+          done
+          # 前端包必须保留运行时信令占位符
+          docker run --rm --entrypoint sh "weblink-web:$VER" -c \
+            'grep -q "\${VITE_WEBSOCKET_URL}" /usr/share/nginx/html/index.html'
+          # 列出前端引用的外部域名，供内网可用性核对
+          docker run --rm --entrypoint sh "weblink-web:$VER" -c \
+            "grep -rhoE 'https?://[A-Za-z0-9.-]+' /usr/share/nginx/html | sort | uniq -c | sort -rn" \
+            | tee external-hosts.txt
+
+      - name: Assemble package
+        env:
+          VER: ${{ steps.meta.outputs.ver }}
+          PKG: ${{ steps.meta.outputs.pkg }}
+        run: |
+          out="dist-offline/$PKG"
+          mkdir -p "$out/images"
+
+          docker save "weblink-web:$VER"           | gzip > "$out/images/weblink-web-$VER.tar.gz"
+          docker save "weblink-ws:$VER"            | gzip > "$out/images/weblink-ws-$VER.tar.gz"
+          docker save "coturn/coturn:$COTURN_VER"  | gzip > "$out/images/coturn-$COTURN_VER.tar.gz"
+
+          cp deploy/offline/docker-compose.yml "$out/"
+          cp deploy/offline/README.md "$out/"
+          cp -r deploy/offline/conf "$out/conf"
+          chmod +x "$out/conf/ssl/gen-cert.sh"
+          sed -e "s/__VER__/$VER/" -e "s/__COTURN_VER__/$COTURN_VER/" \
+            deploy/offline/env.template > "$out/.env"
+
+          (cd "$out" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          ls -lhR "$out"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.pkg }}
+          path: dist-offline/${{ steps.meta.outputs.pkg }}/
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 30
+
+      - name: Summary
+        env:
+          PKG: ${{ steps.meta.outputs.pkg }}
+        run: |
+          {
+            echo "### $PKG"
+            echo
+            echo "- STUN: \`$STUN_SERVERS\`"
+            echo "- coturn: \`$COTURN_VER\`"
+            echo
+            echo '前端引用的外部域名：'
+            echo '```'
+            cat external-hosts.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
