@@ -193,6 +193,30 @@
         "description": "Wird von allen Räumen geteilt, denen das automatische Herunterladen von Dateien gestattet ist. Größere Dateien können weiterhin manuell heruntergeladen werden."
       }
     },
+    "remote_transfer": {
+      "title": "Remote-Dateien und Zwischenablage",
+      "file_drop": {
+        "title": "Remote-Datei-Drag-and-Drop",
+        "description": "Aktivieren Sie diese Option auf dem Controller, um Dateien auf dem Remote-Bildschirm abzulegen. Erfordert einen Windows-Desktop-Host und eine Zielanwendung, die das Löschen von Dateien akzeptiert. Die Ordner werden zunächst gezippt."
+      },
+      "clipboard": {
+        "title": "Remote-Zwischenablage synchronisieren",
+        "description": "Auf dem steuernden Gerät aktivieren, um unterstützte Inhalte der Zwischenablage zu synchronisieren."
+      },
+      "clipboard_files": {
+        "loading": "Verfügbarkeit der Zwischenablage prüfen…",
+        "unavailable": "Das Schreiben in die Zwischenablage ist hier nicht möglich. Wählen Sie Dateicache oder Aus.",
+        "title": "Beim Kopieren von Dateien",
+        "clipboard": "Zwischenablage",
+        "cache": "Dateicache",
+        "off": "Aus",
+        "description": "Die Webversion empfängt Dateien im Dateicache. Die Windows-Desktop-App kann sie auch in die Zwischenablage kopieren. Ordner werden als ZIP komprimiert."
+      },
+      "file_size_limit": {
+        "title": "Größenbeschränkung für Dateiübertragungen",
+        "description": "Wird per Drag-and-Drop und Kopieren/Einfügen geteilt, wobei die gesamten Dateibytes pro Vorgang gezählt werden. Standard: 64 MiB; Bereich: 1–512 MiB. Ordner müssen vor und nach der ZIP-Komprimierung passen. Änderungen gelten für den nächsten Vorgang."
+      }
+    },
     "about": {
       "reset_options": "Einstellungen zurücksetzen",
       "clear_service_worker_cache": "App-Cache leeren",
@@ -266,10 +290,10 @@
       },
       "native_capture": "Bildschirmaufnahme und Kodierung",
       "native_encoder": "Videokodierung für Bildschirmfreigabe",
-      "native_encoder_auto": "Automatisch (kompatible Hardware bevorzugen)",
+      "native_encoder_auto": "Automatisch",
       "hardware": "Hardware",
       "software": "Software",
-      "native_encoder_description": "Wählen Sie Desktop-Aufnahmemethoden und Video-Codecs für die nächste Freigabe.",
+      "native_encoder_description": "Automatisch bevorzugt Hardware für gemeinsam unterstützte Formate. Bei Teilnehmerwechsel können Medienverbindungen erneuert werden; die Aufnahme läuft weiter. Manuelle Änderungen gelten ab der nächsten Freigabe.",
       "native_advanced": "Erweiterte Optionen für diese Kodierung",
       "readback_buffers": "GPU-Rücklesepuffer",
       "readback_buffers_1": "Einzelpuffer",
@@ -277,7 +301,7 @@
       "readback_buffers_3": "Dreifachpuffer",
       "readback_buffers_description": "Mehr Puffer ermöglichen eine überlappende Frame-Verarbeitung, verbrauchen jedoch mehr GPU-Speicher und können die Latenz erhöhen. Gilt für die nächste Freigabe.",
       "color_matrix": "Farbmatrix",
-      "color_auto": "Automatisch (passender Codec)",
+      "color_auto": "Automatisch",
       "color_range": "Farbpalette",
       "color_range_limited": "Begrenzt (16–235, größere Kompatibilität)",
       "color_range_full": "Voll (0–255)",
@@ -290,7 +314,7 @@
         "unavailable": "Derzeit nicht verfügbar",
         "codec": {
           "title": "Bevorzugter Audio-Codec",
-          "unsupported": "Audio-Codec-Funktionen sind nicht verfügbar. Ein kompatibler Codec wird automatisch ausgehandelt."
+          "unsupported": "Codec-Fähigkeiten sind unbekannt. Automatisch nutzt zunächst kompatible Basisformate."
         },
         "sample_rate": {
           "title": "Audio-Abtastrate"
@@ -300,17 +324,18 @@
           "mono": "Mono",
           "stereo": "Stereo (zwei Kanäle)"
         },
-        "description": "Wählen Sie eine unterstützte Abtastrate und Kanalanzahl für die nächste Aufnahme.",
+        "description": "Standard: 48 kHz, Stereo. Gilt für die nächste Aufnahme; Browser können ein ähnliches Geräteformat verwenden.",
         "sampling_loading": "Audioformate werden geladen…",
         "codecs_loading": "Audio-Codecs werden geladen…",
         "sampling_failed": "Systemaudioformate sind derzeit nicht verfügbar.",
-        "sampling_unknown": "Sampling-Optionen sind noch nicht verfügbar. Verwenden Sie „Automatisch“."
+        "sampling_unknown": "Abtastfähigkeiten sind noch unbekannt. Standardpräferenz: 48 kHz, Stereo.",
+        "default": "Standard"
       },
       "encoders_loading": "Video-Encoder werden erkannt…",
       "backends_loading": "Erfassungsmethoden werden geladen…",
       "backends_unavailable": "Erfassungsmethoden sind derzeit nicht verfügbar.",
       "browser_encoding": "Browser-Kodierung",
-      "browser_encoding_description": "Wird für Kameras, Mikrofone und die Browser-Bildschirmfreigabe bei späteren Verbindungsaushandlungen verwendet.",
+      "browser_encoding_description": "Automatisch tauscht Decoder-Fähigkeiten aus und wählt gemeinsam unterstützte Formate. Bei Beitritt oder Austritt wird neu gewählt. Manuelle Einstellungen bleiben Browser-Präferenzen.",
       "native_audio_codec": "Nativer Audio-Codec"
     },
     "remote_control": {
@@ -354,11 +379,11 @@
       "touch_heading": "Touch",
       "keyboard": {
         "title": "Tastatureingaben weiterleiten",
-        "description": "Im lokalen Cursormodus werden durch Klicken auf den Bildschirm unterstützte physische Tasten mithilfe des Remote-Tastaturlayouts weitergeleitet. Der Aufnahmemodus leitet Tasten nur weiter, während sie erfasst werden. Verwenden Sie den Kopfschalter, um die Weiterleitung auszuschalten. Die manuell zu öffnende Bildschirmtastatur funktioniert in beiden Modi."
+        "description": "Leitet physische Tasten bei aktiver Fernsteuerung und eingeschaltetem Schalter weiter, ohne Klick auf den Bildschirm. Lokale Textfelder bleiben normal nutzbar. Mit dem Schalter oben lässt sich die Weiterleitung stoppen."
       },
       "exit_shortcut": {
         "title": "Tastenkombination zum Freigeben von Zeiger und Tastatur",
-        "description": "Geben Sie Tastatureingaben und alle erfassten Zeiger frei, ohne die Steuerverbindung zu beenden. Die Verknüpfung funktioniert auch, wenn die Tastaturweiterleitung deaktiviert ist.",
+        "description": "Schaltet die Tastaturweiterleitung aus und gibt den erfassten Zeiger frei, ohne die Verbindung zu beenden. Zum Fortsetzen den Tastaturschalter einschalten. Das Kürzel funktioniert auch bei ausgeschalteter Weiterleitung.",
         "browser": "Sie können auch Escape drücken, um die Aufnahme freizugeben.",
         "native": "Wenn die Weiterleitung von Systemverknüpfungen aktiviert ist, wird Escape an den Remote-Computer gesendet. Verwenden Sie die obige Verknüpfung, um die Eingabe freizugeben.",
         "webview": "Bei Verwendung der Browser-Tastenbehandlung gibt Escape auch die Erfassung frei."
@@ -380,39 +405,46 @@
         "title": "Zeigerverhalten",
         "local": "Lokaler Cursor",
         "capture": "Lokalen Cursor erfassen und ausblenden",
-        "local_description": "Verwenden Sie den lokalen Cursor, um auf den Remote-Bildschirm zu zeigen. Klicken Sie auf den Bildschirm, um Tastatureingaben weiterzuleiten. Mit dem Header-Schalter kann die Weiterleitung ausgeschaltet werden.",
-        "capture_description": "Klicken Sie auf den Remote-Bildschirm, um den lokalen Cursor zu erfassen und auszublenden. Nur während der Erfassung werden physische Schlüssel weitergeleitet. Verwenden Sie die Freigabetaste, um sowohl den Zeiger als auch die Tastatur freizugeben. Die Steuerverbindung bleibt aktiv."
+        "local_description": "Verwenden Sie den lokalen Cursor auf dem Remote-Bildschirm. Tastatur und Gamepad haben eigene Schalter; ein Klick auf den Bildschirm ist nicht erforderlich.",
+        "capture_description": "Klicke auf den entfernten Bildschirm, um den lokalen Zeiger zu erfassen und auszublenden. Tastatur und Gamepads nutzen eigene Schalter und benötigen keine Zeigererfassung."
       },
-      "general_heading": "Allgemein",
       "cursor_sync": {
         "title": "Synchronisieren Sie das Erscheinungsbild des Remote-Cursors",
         "description": "Passen Sie im lokalen Cursormodus den Remote-Text, die Hand, die Größe und andere Cursorformen an."
-      },
-      "clipboard": {
-        "title": "Remote-Zwischenablage synchronisieren",
-        "description": "Auf dem steuernden Gerät aktivieren, um unterstützte Inhalte der Zwischenablage zu synchronisieren."
-      },
-      "clipboard_files": {
-        "loading": "Verfügbarkeit der Zwischenablage prüfen…",
-        "unavailable": "Das Schreiben in die Zwischenablage ist hier nicht möglich. Wählen Sie Dateicache oder Aus.",
-        "title": "Beim Kopieren von Dateien",
-        "clipboard": "Zwischenablage",
-        "cache": "Dateicache",
-        "off": "Aus",
-        "description": "Die Webversion empfängt Dateien im Dateicache. Die Windows-Desktop-App kann sie auch in die Zwischenablage kopieren. Ordner werden als ZIP komprimiert."
       },
       "emergency_shortcut": {
         "title": "Tastenkombination für den Notstopp am Host",
         "description": "Nur Windows-Desktop. Während dieser Computer ferngesteuert wird, stoppt diese Verknüpfung ihn, selbst wenn die App im Hintergrund läuft. Die Schlüssel werden nicht reserviert oder abgefangen; Möglicherweise reagieren auch andere Apps.",
         "failed": "Der Notfall-Shortcut-Listener konnte nicht aktualisiert werden. Die vorherige Einstellung wurde beibehalten. Bitte versuchen Sie es erneut."
       },
-      "file_drop": {
-        "title": "Remote-Datei-Drag-and-Drop",
-        "description": "Aktivieren Sie diese Option auf dem Controller, um Dateien auf dem Remote-Bildschirm abzulegen. Erfordert einen Windows-Desktop-Host und eine Zielanwendung, die das Löschen von Dateien akzeptiert. Die Ordner werden zunächst gezippt."
+      "gamepad_heading": "Gamepad",
+      "gamepad": {
+        "title": "Gamepads weiterleiten",
+        "description": "Leitet bei aktiver Fernsteuerung und eingeschaltetem Schalter bis zu 4 Standard-Gamepads weiter. Kein Bildschirmklick nötig. Drücke eine Gamepad-Taste, falls es noch nicht erkannt wurde.",
+        "vibration": "Vibrationsfeedback",
+        "vibration_description": "Überträgt Spielvibrationen auf den verbundenen Controller, sofern der Browser dies unterstützt. Stoppt am Ende der Steuerung.",
+        "strength": "Vibrationsstärke",
+        "dead_zone": "Stick-Totzone",
+        "dead_zone_description": "Ignoriert kleine Stickbewegungen, um Drift zu reduzieren."
       },
-      "file_size_limit": {
-        "title": "Größenbeschränkung für Dateiübertragungen",
-        "description": "Wird per Drag-and-Drop und Kopieren/Einfügen geteilt, wobei die gesamten Dateibytes pro Vorgang gezählt werden. Standard: 64 MiB; Bereich: 1–512 MiB. Ordner müssen vor und nach der ZIP-Komprimierung passen. Änderungen gelten für den nächsten Vorgang."
+      "devices": {
+        "title": "Eingabegeräte dieses Computers",
+        "description": "Prüfen Sie, welche Ferneingaben dieses Gerät empfangen kann. Die Geräte werden am Sitzungsende freigegeben und getrennt.",
+        "keyboard": "Tastatur",
+        "mouse": "Maus",
+        "touchpad": "Touchpad-Gesten",
+        "touchscreen": "Touchscreen",
+        "gamepad": "Gamepad",
+        "available": "Verfügbar",
+        "unsupported": "Nicht unterstützt",
+        "driverRequired": "Treiber erforderlich",
+        "unavailable": "Nicht verfügbar",
+        "error": "Eingabegeräte konnten nicht geprüft werden. Erneut versuchen.",
+        "driver_description": "Für Gamepads unter Windows ist ein optionaler Treiber erforderlich. Die Installation benötigt Administratorrechte; Weblink selbst läuft ohne erhöhte Rechte. Danach erneut prüfen.",
+        "install_driver": "Installationsanleitung",
+        "driver_retired": "ViGEmBus wird nicht mehr gepflegt und erhält keine Updates.",
+        "checking": "Wird geprüft…",
+        "refresh": "Erneut prüfen"
       }
     },
     "permissions": {
@@ -812,10 +844,10 @@
       "obs_audio_setup_tip": "OBS + VB-CABLE-Setup:\n1. OBS-Einstellungen → Audio → Erweitert → Überwachungsgerät: KABEL-Eingang.\n2. OBS-Bearbeitung → Erweiterte Audioeigenschaften → Audioüberwachung: Monitor und Ausgabe.\n3. Wählen Sie in Weblink CABLE Output für Program Audio.",
       "request_camera_permission": "Fordern Sie eine Kameraerlaubnis an",
       "request_microphone_permission": "Fordern Sie eine Mikrofonberechtigung an",
-      "select_system_audio_source": "System-Audioquelle auswählen (Auto)",
-      "select_program_audio": "Wählen Sie den Programm-Audioeingang (Auto).",
-      "select_microphone": "Mikrofon auswählen (Auto)",
-      "select_camera": "Kamera auswählen (Auto)",
+      "select_system_audio_source": "System-Audioquelle auswählen (Systemstandard)",
+      "select_program_audio": "Wählen Sie den Programm-Audioeingang. (Systemstandard)",
+      "select_microphone": "Mikrofon auswählen (Systemstandard)",
+      "select_camera": "Kamera auswählen (Systemstandard)",
       "open_screen": "Bildschirm öffnen",
       "open_media_device": "Öffnen Sie das Mediengerät",
       "current": "Aktuell",
@@ -1083,6 +1115,7 @@
       "screen_backend": "Methode zur Bildschirmaufnahme",
       "window_backend": "Fenstererfassungsmethode",
       "auto_backend": "Automatisch",
+      "default_backend": "Standard",
       "unavailable": "Nicht verfügbar",
       "search_windows": "Fenster suchen",
       "size_unknown": "Größe nicht verfügbar",
@@ -1291,7 +1324,7 @@
     "keyboard_input": "Geben Sie auf dem Remote-Computer ein",
     "text_too_long": "Der Text ist zu lang. Versenden Sie es in kleineren Teilen.",
     "text_failed": "Die Eingabe konnte nicht vollständig gesendet werden. Überprüfen Sie den Remote-Text, bevor Sie es erneut versuchen.",
-    "system_keyboard_stopped": "Die Weiterleitung der Systemtastatur wurde gestoppt. Klicken Sie auf den Remote-Bildschirm, um es erneut zu versuchen, oder deaktivieren Sie die Systemverknüpfungen in den Fernsteuerungseinstellungen.",
+    "system_keyboard_stopped": "Die Systemtastaturweiterleitung wurde beendet. Schalte die Tastatur erneut ein oder deaktiviere Systemtastenkürzel in den Fernsteuerungseinstellungen.",
     "capture_failed": "Der Zeiger konnte nicht erfasst werden. Klicken Sie auf den Remote-Bildschirm, um es erneut zu versuchen, oder wählen Sie „Lokaler Cursor“ in den Fernsteuerungseinstellungen.",
     "capture_unavailable": "Dieser Host unterstützt keine Zeigererfassung. Wählen Sie „Lokaler Cursor“ in den Fernsteuerungseinstellungen.",
     "capture_hint": "Klicken Sie, um den Zeiger zu erfassen. Drücken Sie {{shortcut}}, um den Zeiger und die Tastatur freizugeben.",
@@ -1304,6 +1337,10 @@
       "completed": "Ablegen der Dateien auf dem entfernten Computer abgeschlossen",
       "failed": "Ablegen der Dateien auf dem entfernten Computer fehlgeschlagen",
       "details": "Öffnen Sie die Aufgabenliste für Übertragungsdetails."
-    }
+    },
+    "gamepad_enable": "Gamepad-Weiterleitung aktivieren",
+    "gamepad_disable": "Gamepad-Weiterleitung deaktivieren",
+    "gamepad_unavailable": "Gamepad-Weiterleitung ist auf dem Host nicht verfügbar. Prüfe dort die Fernsteuerungseinstellungen.",
+    "gamepad_failed": "Das entfernte Gamepad konnte nicht verbunden werden oder reagiert nicht mehr. Treiber auf dem Host prüfen und Gamepad erneut verbinden."
   }
 }

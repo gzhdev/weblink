@@ -1,6 +1,8 @@
 //! Display-only Desktop Duplication. Acquisition and release stay on one worker.
+mod transfer;
+
 use crate::{
-    surface::{Cursor, CursorShape, Rotation, TextureFrame},
+    surface::{Cursor, CursorShape, Rotation},
     Frames, Result, Session,
 };
 use std::{
@@ -9,7 +11,6 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
 };
 use windows::{
     core::Interface,
@@ -24,10 +25,21 @@ use windows::{
 };
 
 struct Duplication {
-    device: ID3D11Device,
     context: ID3D11DeviceContext,
     output: IDXGIOutputDuplication,
+    transfer: transfer::Transfer,
     rotation: Rotation,
+}
+
+// DXGI cannot cancel an AcquireNextFrame wait. New frames return immediately;
+// this timeout only bounds shutdown / source changes when the desktop is static.
+const ACQUIRE_TIMEOUT_MS: u32 = 50;
+
+struct Finished(Arc<Mutex<Frames>>);
+impl Drop for Finished {
+    fn drop(&mut self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).finish();
+    }
 }
 impl Duplication {
     fn open(monitor: Option<usize>) -> Result<Self> {
@@ -61,17 +73,6 @@ impl Duplication {
                     .map_err(|e| e.to_string())?;
                     let device = device.ok_or("No DXGI capture device")?;
                     let context = context.ok_or("No DXGI capture context")?;
-                    // Acquisition and the sink's asynchronous GPU readback share
-                    // this immediate context. A mutex around CopyResource/Map
-                    // alone does not serialize DXGI's internal context access.
-                    // Enable D3D protection before creating the duplication.
-                    let multithread: ID3D11Multithread = context.cast().map_err(|e| {
-                        format!("DXGI capture requires a thread-safe D3D context: {e}")
-                    })?;
-                    let _ = multithread.SetMultithreadProtected(true);
-                    if !multithread.GetMultithreadProtected().as_bool() {
-                        return Err("Could not enable DXGI D3D context protection".into());
-                    }
                     let duplication = match output.DuplicateOutput(&device) {
                         Ok(duplication) => duplication,
                         Err(_) if monitor.is_none() => continue,
@@ -87,10 +88,18 @@ impl Duplication {
                         DXGI_MODE_ROTATION_ROTATE270 => Rotation::Clockwise270,
                         _ => Rotation::Identity,
                     };
+                    let desc = duplication.GetDesc();
+                    // Validate sharing before announcing readiness so Auto can
+                    // still choose WGC if this device cannot support the bridge.
+                    let transfer = match transfer::Transfer::new(&device, &desc.ModeDesc) {
+                        Ok(transfer) => transfer,
+                        Err(_) if monitor.is_none() => continue,
+                        Err(error) => return Err(error),
+                    };
                     return Ok(Self {
-                        device,
                         context,
                         output: duplication,
+                        transfer,
                         rotation,
                     });
                 }
@@ -98,20 +107,19 @@ impl Duplication {
         }
         Err("No display supports Desktop Duplication in this session".into())
     }
-    fn run(&self, stop: &AtomicBool, frames: &Mutex<Frames>) -> Result<()> {
+    fn run(&mut self, stop: &AtomicBool, frames: &Mutex<Frames>) -> Result<()> {
         let mut cursor = Cursor::default();
         while !stop.load(Ordering::Acquire) {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            // A blocking acquire holds the protected D3D context while waiting
-            // for desktop changes, starving Map on the conversion worker.
-            // Poll once, then wait outside the graphics API when idle.
-            match unsafe { self.output.AcquireNextFrame(0, &mut info, &mut resource) } {
+            // Only this worker uses the acquisition device. Readback owns a
+            // separate context and can finish the last frame during this wait.
+            match unsafe {
+                self.output
+                    .AcquireNextFrame(ACQUIRE_TIMEOUT_MS, &mut info, &mut resource)
+            } {
                 Ok(()) => {}
-                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                    thread::sleep(Duration::from_millis(1));
-                    continue;
-                }
+                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => continue,
                 Err(error) => {
                     return Err(format!(
                         "Desktop Duplication stopped; select the display again: {error}"
@@ -120,6 +128,9 @@ impl Duplication {
             }
             // Every successful acquisition is released, including sink/conversion errors.
             let _lease = FrameLease(&self.output);
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
             let texture: ID3D11Texture2D = resource
                 .ok_or("Missing duplicated desktop texture")?
                 .cast()
@@ -160,15 +171,12 @@ impl Duplication {
                 cursor.pitch = shape.Pitch;
                 cursor.bytes = Arc::new(data);
             }
-            Frames::deliver(
-                frames,
-                TextureFrame {
-                    device: &self.device,
-                    context: &self.context,
-                    texture: &texture,
-                    rotation: self.rotation,
-                    cursor: Some(&cursor),
-                },
+            self.transfer.deliver(
+                &self.context,
+                &texture,
+                self.rotation,
+                Some(&cursor),
+                |frame| Frames::deliver(frames, frame),
             )?;
         }
         Ok(())
@@ -191,13 +199,17 @@ pub(super) fn start(monitor: usize, frames: Arc<Mutex<Frames>>) -> Result<Box<dy
     let worker = thread::Builder::new()
         .name("weblink-display-dxgi".into())
         .spawn(move || {
-            let duplication = match Duplication::open(Some(monitor)) {
+            let mut duplication = match Duplication::open(Some(monitor)) {
                 Ok(duplication) => duplication,
                 Err(error) => {
                     let _ = ready.send(Err(error.clone()));
                     return Err(error);
                 }
             };
+            // Startup errors return to the caller and may trigger WGC fallback
+            // with these same frames. Only an opened session can close them.
+            // Arm before announcing readiness so even an immediate exit wakes it.
+            let _finished = Finished(frames.clone());
             if ready.send(Ok(())).is_err() {
                 return Ok(());
             }
@@ -253,5 +265,28 @@ impl Session for DxgiSession {
 impl Drop for DxgiSession {
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod native;
+
+    #[test]
+    fn failed_dxgi_start_leaves_shared_frames_open_for_fallback() {
+        let (send, receive) = mpsc::channel();
+        let frames = Arc::new(Mutex::new(Frames {
+            changed: crate::lifecycle::Changed::new(move || {
+                let _ = send.send(());
+            }),
+            ..Default::default()
+        }));
+        // A null monitor cannot match an attached display. Failure must be
+        // synchronous; an Auto caller can reuse these frames for WGC.
+        assert!(start(0, frames.clone()).is_err());
+        assert!(!frames.lock().unwrap().closed);
+        assert_eq!(receive.try_recv(), Err(mpsc::TryRecvError::Empty));
     }
 }

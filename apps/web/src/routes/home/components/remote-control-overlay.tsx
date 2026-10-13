@@ -10,6 +10,8 @@ import { useVideoDisplay } from "@/routes/home/components/video-display-context"
 import { t } from "@/i18n";
 import { toast } from "solid-sonner";
 import { appState } from "@/libs/state/app-state";
+import { setAppOptions } from "@/options";
+import { isLocalTextTarget } from "@/libs/domain/remote-control/local-input";
 import { Trackpad } from "@/libs/domain/remote-control/trackpad";
 import { DirectTouch } from "@/libs/domain/remote-control/direct-touch";
 import {
@@ -19,6 +21,10 @@ import {
 import type { TrackpadEvent } from "@/libs/domain/remote-control/trackpad-types";
 import { ThreeFingerTap } from "@/libs/domain/remote-control/three-finger-tap";
 import { RemoteKeyboard } from "@/libs/domain/remote-control/keyboard";
+import {
+  RemoteGamepads,
+  captureGamepads,
+} from "@/libs/domain/remote-control/gamepad";
 import { shortcutLabel } from "@/libs/domain/keyboard-shortcut";
 import { resolveRemoteKeyboardOptions } from "@/libs/domain/remote-control/keyboard-options";
 import { createRemoteCursor } from "@/libs/hooks/remote-cursor";
@@ -42,8 +48,11 @@ export function RemoteControlOverlay(props: {
   const { control, state } = createVideoRemoteControl();
   const [surface, setSurface] =
     createSignal<HTMLDivElement>();
+  // Fullscreen/layout dependencies can change while control stays enabled.
+  // Resource owners must restart only when the effective value changes.
+  const enabled = createMemo(() => props.enabled);
   const interactive = () =>
-    props.enabled &&
+    enabled() &&
     (state() === "active" || state() === "activating");
   let captureClick = false;
   const held = new Set<number>();
@@ -68,20 +77,9 @@ export function RemoteControlOverlay(props: {
     | Pick<MouseEvent, "clientX" | "clientY">
     | undefined;
   let windowActive = true;
-  const [systemKeyboard, setSystemKeyboard] =
-    createSignal(false);
-  createEffect(() => {
-    let disposed = false;
-    void platform.keyboard
-      ?.supported()
-      .then((supported) => {
-        if (!disposed) setSystemKeyboard(supported);
-      })
-      .catch(() => {});
-    onCleanup(() => {
-      disposed = true;
-    });
-  });
+  const systemKeyboard = () =>
+    !!platform.keyboard &&
+    appState.capabilities.runtime?.systemKeyboard === true;
   const pointerOptions = createMemo(() =>
     resolveRemotePointerOptions(
       appState.options.remotePointer,
@@ -97,7 +95,7 @@ export function RemoteControlOverlay(props: {
   const cursorStyle = createRemoteCursor(
     control,
     () =>
-      props.enabled &&
+      enabled() &&
       state() === "active" &&
       !captureMode() &&
       (mouseInside() || mouseDragging()),
@@ -142,9 +140,7 @@ export function RemoteControlOverlay(props: {
   const capture = createRemotePointerCapture({
     element: surface,
     enabled: () =>
-      props.enabled &&
-      state() === "active" &&
-      captureMode(),
+      enabled() && state() === "active" && captureMode(),
     released: resetInput,
     failed: () =>
       toast.error(t("remote_control.capture_failed")),
@@ -153,11 +149,111 @@ export function RemoteControlOverlay(props: {
     capture.active() &&
     surface()?.ownerDocument.pointerLockElement ===
       surface();
+  const [pageActive, setPageActive] = createSignal(false);
+  const [localEditing, setLocalEditing] =
+    createSignal(false);
+  const sessionInputActive = () =>
+    enabled() && pageActive() && state() === "active";
   const keyboardActive = () =>
-    props.enabled &&
-    focused() &&
-    state() === "active" &&
-    (!captureMode() || captured());
+    sessionInputActive() && !localEditing();
+  createEffect(() => {
+    const doc = surface()?.ownerDocument;
+    const view = doc?.defaultView;
+    if (!doc || !view) return;
+    const life = new AbortController();
+    const { signal } = life;
+    const focusedElement = () => {
+      let element = doc.activeElement;
+      while (element?.shadowRoot?.activeElement)
+        element = element.shadowRoot.activeElement;
+      setLocalEditing(isLocalTextTarget(element));
+    };
+    setPageActive(!doc.hidden && doc.hasFocus());
+    focusedElement();
+    view.addEventListener(
+      "focus",
+      () => {
+        setPageActive(!doc.hidden);
+        focusedElement();
+      },
+      { signal },
+    );
+    view.addEventListener(
+      "blur",
+      () => setPageActive(false),
+      { signal },
+    );
+    doc.addEventListener(
+      "visibilitychange",
+      () => setPageActive(!doc.hidden && doc.hasFocus()),
+      { signal },
+    );
+    doc.addEventListener(
+      "focusin",
+      (event) =>
+        setLocalEditing(
+          event.composedPath().some(isLocalTextTarget),
+        ),
+      { signal },
+    );
+    doc.addEventListener(
+      "focusout",
+      () =>
+        queueMicrotask(() => {
+          if (!signal.aborted) focusedElement();
+        }),
+      { signal },
+    );
+    onCleanup(() => life.abort());
+  });
+  createEffect(() => {
+    if (!keyboardActive()) keyboard?.release();
+  });
+  const [gamepadSlots, setGamepadSlots] = createSignal(0);
+  createEffect(() => {
+    const c = control();
+    const refresh = () =>
+      setGamepadSlots(c?.gamepadSlots() ?? 0);
+    refresh();
+    c?.addEventListener("change", refresh);
+    onCleanup(() =>
+      c?.removeEventListener("change", refresh),
+    );
+  });
+  createEffect(() => {
+    const c = control(),
+      window = surface()?.ownerDocument.defaultView;
+    const slots = gamepadSlots();
+    if (
+      !c ||
+      !window ||
+      !sessionInputActive() ||
+      !appState.options.remoteGamepad.enabled ||
+      !slots
+    )
+      return;
+    const pads = new RemoteGamepads(
+      (event) => c.input(event),
+      slots,
+      undefined,
+      () => toast.error(t("remote_control.gamepad_failed")),
+    );
+    const unwatch = c.watchGamepads((status) =>
+      pads.status(status),
+    );
+    const unwatchFeedback = c.watchGamepadFeedback(
+      (feedback) => pads.feedback(feedback),
+    );
+    createEffect(() =>
+      pads.configure(appState.options.remoteGamepad),
+    );
+    const stop = captureGamepads(window, pads);
+    onCleanup(() => {
+      unwatch();
+      unwatchFeedback();
+      stop();
+    });
+  });
   const stopInput = () => {
     captureClick = false;
     const wasCaptured = capture.active();
@@ -172,9 +268,17 @@ export function RemoteControlOverlay(props: {
     if (
       element &&
       element.ownerDocument.activeElement === element
-    )
-      element.blur(); // onBlur releases pointer capture and held input together.
-    else stopInput();
+    ) {
+      const pointerHeld =
+        held.size || fingers.size || capture.active();
+      element.blur();
+      if (!pointerHeld) stopInput();
+    } else stopInput();
+  };
+  const exitKeyboard = () => {
+    keyboard?.release();
+    setAppOptions("remoteKeyboard", "enabled", false);
+    releaseControls();
   };
   const contentSize = () => {
     const v = video.videoRef();
@@ -210,8 +314,6 @@ export function RemoteControlOverlay(props: {
           c === control() &&
           c.state() === "active" &&
           !!nativeKeys() &&
-          surface()?.ownerDocument.activeElement ===
-            surface() &&
           !surface()?.ownerDocument.hidden,
         input: (event) => c.input(event),
         clipboard: (action) => {
@@ -225,14 +327,20 @@ export function RemoteControlOverlay(props: {
           );
         },
         reset: () => c.resetInput(),
-        cancel: releaseControls,
+        cancel: exitKeyboard,
         stopped: (failed) => {
           if (focused() || capture.active())
             releaseControls();
-          if (failed)
+          if (failed) {
+            setAppOptions(
+              "remoteKeyboard",
+              "enabled",
+              false,
+            );
             toast.error(
               t("remote_control.system_keyboard_stopped"),
             );
+          }
         },
       },
     );
@@ -245,7 +353,7 @@ export function RemoteControlOverlay(props: {
     const keys = new RemoteKeyboard(
       {
         input: (event) => c.input(event),
-        cancel: releaseControls,
+        cancel: exitKeyboard,
       },
       options,
     );
@@ -254,6 +362,75 @@ export function RemoteControlOverlay(props: {
       keys.release();
       if (keyboard === keys) keyboard = undefined;
     });
+  });
+  createEffect(() => {
+    const view = surface()?.ownerDocument.defaultView;
+    if (!view) return;
+    const lifetime = new AbortController();
+    const { signal } = lifetime;
+    const accepts = (event: Event) =>
+      keyboardActive() &&
+      !event.defaultPrevented &&
+      !event.composedPath().some(isLocalTextTarget);
+    view.addEventListener(
+      "keydown",
+      (e) => {
+        if (!accepts(e)) return;
+        const native = nativeKeys();
+        if (
+          !native &&
+          props
+            .keyboard?.()
+            ?.clipboardEnabled?.(
+              e.code === "KeyC" ? "copy" : "paste",
+            ) &&
+          (e.ctrlKey || e.metaKey) &&
+          !e.altKey &&
+          !e.shiftKey &&
+          ["KeyC", "KeyV"].includes(e.code)
+        ) {
+          keyboard?.release();
+          if (e.code === "KeyC") {
+            e.preventDefault();
+            if (!e.repeat) props.keyboard?.()?.copy?.();
+          }
+          return;
+        }
+        if (native) keyboard?.exit(e);
+        if (native || keyboard?.down(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      },
+      { signal },
+    );
+    view.addEventListener(
+      "keyup",
+      (e) => {
+        if (
+          accepts(e) &&
+          (nativeKeys() || keyboard?.up(e))
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      },
+      { signal },
+    );
+    view.addEventListener(
+      "paste",
+      (event) => {
+        if (accepts(event))
+          props.keyboard?.()?.pasteEvent?.(event);
+      },
+      { signal },
+    );
+    view.addEventListener(
+      "compositionstart",
+      () => keyboard?.release(),
+      { signal },
+    );
+    onCleanup(() => lifetime.abort());
   });
   createEffect(() => {
     const c = control(),
@@ -413,7 +590,7 @@ export function RemoteControlOverlay(props: {
   };
   createEffect(() => {
     const element = surface();
-    if (!element || !props.enabled) return;
+    if (!element || !enabled()) return;
     const doc = element.ownerDocument;
     const win = doc.defaultView ?? window;
     const life = new AbortController();
@@ -597,7 +774,7 @@ export function RemoteControlOverlay(props: {
     const keyboard = pendingKeyboard;
     pendingKeyboard = undefined;
     if (
-      props.enabled &&
+      enabled() &&
       keyboard === props.keyboard?.() &&
       keyboard?.available()
     )
@@ -697,7 +874,7 @@ export function RemoteControlOverlay(props: {
     });
   };
   return (
-    <Show when={props.enabled && state() !== "unavailable"}>
+    <Show when={enabled() && state() !== "unavailable"}>
       <RemoteFileDropArea
         active={interactive()}
         enabled={pointerOptions().fileDrop}
@@ -743,54 +920,13 @@ export function RemoteControlOverlay(props: {
           onFocus={() => setFocused(interactive())}
           onBlur={() => {
             setFocused(false);
-            stopInput();
-          }}
-          onKeyDown={(e) => {
             if (
-              e.target !== e.currentTarget ||
-              !keyboardActive()
+              held.size ||
+              fingers.size ||
+              capture.active()
             )
-              return;
-            const native = nativeKeys();
-            if (
-              !native &&
-              props
-                .keyboard?.()
-                ?.clipboardEnabled?.(
-                  e.code === "KeyC" ? "copy" : "paste",
-                ) &&
-              (e.ctrlKey || e.metaKey) &&
-              !e.altKey &&
-              !e.shiftKey &&
-              ["KeyC", "KeyV"].includes(e.code)
-            ) {
-              keyboard?.release();
-              if (e.code === "KeyC") {
-                e.preventDefault();
-                if (!e.repeat) props.keyboard?.()?.copy?.();
-              }
-              return;
-            }
-            if (native) keyboard?.exit(e);
-            if (native || keyboard?.down(e)) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
+              stopInput();
           }}
-          onKeyUp={(e) => {
-            if (
-              keyboardActive() &&
-              e.target === e.currentTarget &&
-              (nativeKeys() || keyboard?.up(e))
-            ) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-          }}
-          onPaste={(event) => {
-            props.keyboard?.()?.pasteEvent?.(event);
-          }}
-          onCompositionStart={() => keyboard?.release()}
           onContextMenu={(e) => {
             if (!interactive()) return;
             e.preventDefault();

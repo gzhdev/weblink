@@ -193,6 +193,30 @@
         "description": "Partagé par toutes les salles autorisées à télécharger automatiquement les fichiers. Les fichiers plus volumineux peuvent toujours être téléchargés manuellement."
       }
     },
+    "remote_transfer": {
+      "title": "Fichiers distants et presse-papiers",
+      "file_drop": {
+        "title": "Glisser-déposer de fichiers distants",
+        "description": "Activez sur le contrôleur pour déposer des fichiers sur l’écran distant. Nécessite un hôte de bureau Windows et une application cible qui accepte les suppressions de fichiers. Les dossiers sont compressés en premier."
+      },
+      "clipboard": {
+        "title": "Synchroniser le presse-papiers distant",
+        "description": "Activez cette option sur l’appareil de contrôle pour synchroniser les contenus du presse-papiers pris en charge."
+      },
+      "clipboard_files": {
+        "loading": "Vérification de la disponibilité du presse-papiers…",
+        "unavailable": "L’écriture dans le presse-papiers n’est pas disponible ici. Choisissez Cache de fichiers ou Désactivé.",
+        "title": "Lors de la copie de fichiers",
+        "clipboard": "Presse-papiers",
+        "cache": "Cache de fichiers",
+        "off": "Désactivé",
+        "description": "La version web reçoit les fichiers dans le cache. Sous Windows, l’application de bureau peut aussi les copier dans le presse-papiers. Les dossiers sont compressés en ZIP."
+      },
+      "file_size_limit": {
+        "title": "Limite de taille de transfert de fichiers",
+        "description": "Partagé par glisser-déposer et copier/coller, en comptant le nombre total d'octets du fichier par opération. Par défaut : 64 Mio ; plage : 1 à 512 Mio. Les dossiers doivent s'adapter avant et après la compression ZIP. Les modifications s'appliquent à l'opération suivante."
+      }
+    },
     "about": {
       "reset_options": "Réinitialiser les préférences",
       "clear_service_worker_cache": "Vider le cache de l'application",
@@ -261,15 +285,15 @@
         },
         "preferred_video_codec": {
           "title": "Codec vidéo du navigateur préféré",
-          "auto": "Auto"
+          "auto": "Automatique"
         }
       },
       "native_capture": "Capture d'écran et encodage",
       "native_encoder": "Encodage vidéo de partage d'écran",
-      "native_encoder_auto": "Automatique (préférer un matériel compatible)",
+      "native_encoder_auto": "Automatique",
       "hardware": "Matériel",
       "software": "Logiciel",
-      "native_encoder_description": "Choisissez les méthodes de capture de bureau et les codecs vidéo pour le prochain partage.",
+      "native_encoder_description": "Le mode automatique privilégie le matériel pour les formats communs. Les changements de participants peuvent reconnecter les canaux média ; la capture continue. Les changements manuels prennent effet au prochain partage.",
       "native_advanced": "Options avancées pour cet encodage",
       "readback_buffers": "Tampons de relecture GPU",
       "readback_buffers_1": "Tampon unique",
@@ -277,7 +301,7 @@
       "readback_buffers_3": "Triple tampon",
       "readback_buffers_description": "Un plus grand nombre de tampons permet le traitement des images qui se chevauchent, mais utilise plus de mémoire GPU et peut augmenter la latence. S'applique au prochain partage.",
       "color_matrix": "Matrice de couleurs",
-      "color_auto": "Automatique (correspondre au codec)",
+      "color_auto": "Automatique",
       "color_range": "Gamme de couleurs",
       "color_range_limited": "Limité (16-235, compatibilité plus large)",
       "color_range_full": "Plein (0-255)",
@@ -286,11 +310,11 @@
       "color_format": "Format de couleur de sortie",
       "audio": {
         "title": "Capture audio",
-        "auto": "Auto",
+        "auto": "Automatique",
         "unavailable": "Actuellement indisponible",
         "codec": {
           "title": "Codec audio préféré",
-          "unsupported": "Les capacités du codec audio ne sont pas disponibles. Un codec compatible sera négocié automatiquement."
+          "unsupported": "Capacités des codecs indisponibles. Le mode automatique utilise des formats de base compatibles en attendant."
         },
         "sample_rate": {
           "title": "Taux d'échantillonnage audio"
@@ -300,17 +324,18 @@
           "mono": "Mono",
           "stereo": "Stéréo (deux canaux)"
         },
-        "description": "Choisissez une fréquence d'échantillonnage et un nombre de canaux pris en charge pour la prochaine capture.",
+        "description": "Par défaut : 48 kHz, stéréo. Applicable à la prochaine capture ; le navigateur peut utiliser un format proche proposé par le périphérique.",
         "sampling_loading": "Chargement des formats audio…",
         "codecs_loading": "Chargement des codecs audio…",
         "sampling_failed": "Les formats audio du système ne sont actuellement pas disponibles.",
-        "sampling_unknown": "Les options d'échantillonnage ne sont pas encore disponibles. Utilisez Auto."
+        "sampling_unknown": "Capacités d’échantillonnage encore inconnues. Préférence par défaut : 48 kHz, stéréo.",
+        "default": "Par défaut"
       },
       "encoders_loading": "Détection des encodeurs vidéo…",
       "backends_loading": "Chargement des méthodes de capture…",
       "backends_unavailable": "Les méthodes de capture ne sont actuellement pas disponibles.",
       "browser_encoding": "Encodage du navigateur",
-      "browser_encoding_description": "Utilisé pour les caméras, les microphones et le partage d’écran du navigateur lors des négociations de connexion ultérieures.",
+      "browser_encoding_description": "Le mode automatique échange les capacités de décodage et choisit les formats communs. Le choix est réévalué à chaque arrivée ou départ. Les choix manuels restent des préférences du navigateur.",
       "native_audio_codec": "Codec audio natif"
     },
     "remote_control": {
@@ -354,11 +379,11 @@
       "touch_heading": "Tactile",
       "keyboard": {
         "title": "Transmettre la saisie clavier",
-        "description": "En mode Curseur local, cliquez sur l'écran pour transférer les touches physiques prises en charge à l'aide de la disposition du clavier distant. Le mode Capture transfère les clés uniquement pendant la capture. Utilisez le commutateur d'en-tête pour désactiver le transfert. Le clavier à l'écran ouvert manuellement fonctionne dans les deux modes."
+        "description": "Transmet les touches physiques lorsque le contrôle à distance et cet interrupteur sont actifs, sans cliquer sur l’écran distant. Les champs de texte locaux restent utilisables. L’interrupteur du haut permet d’arrêter la transmission."
       },
       "exit_shortcut": {
         "title": "Raccourci pour libérer le pointeur et le clavier",
-        "description": "Relâchez la saisie au clavier et tout pointeur capturé sans mettre fin à la connexion de contrôle. Le raccourci fonctionne également lorsque le transfert clavier est désactivé.",
+        "description": "Désactive la transmission du clavier et libère le curseur capturé sans fermer la connexion. Réactivez l’interrupteur du clavier pour reprendre. Le raccourci fonctionne aussi lorsque la transmission est désactivée.",
         "browser": "Vous pouvez également appuyer sur Échap pour libérer la capture.",
         "native": "Lorsque le transfert de raccourci système est activé, Escape est envoyé à l'ordinateur distant. Utilisez le raccourci ci-dessus pour libérer la saisie.",
         "webview": "Lors de l'utilisation de la gestion des clés du navigateur, Escape libère également la capture."
@@ -380,39 +405,46 @@
         "title": "Comportement du pointeur",
         "local": "Curseur local",
         "capture": "Capturer et masquer le curseur local",
-        "local_description": "Utilisez le curseur local pour pointer vers l'écran distant. Cliquez sur l'écran pour transférer la saisie au clavier ; le commutateur d'en-tête peut désactiver le transfert.",
-        "capture_description": "Cliquez sur l'écran distant pour capturer et masquer le curseur local. Ce n'est que pendant leur capture que les clés physiques sont transmises. Utilisez le raccourci de libération pour libérer à la fois le pointeur et le clavier ; la connexion de contrôle reste active."
+        "local_description": "Utilisez le curseur local sur l’écran distant. Le clavier et la manette ont leurs propres commutateurs, sans devoir cliquer sur l’écran.",
+        "capture_description": "Cliquez sur l’écran distant pour capturer et masquer le curseur local. Le clavier et les manettes disposent de leurs propres interrupteurs et ne nécessitent pas la capture du curseur."
       },
-      "general_heading": "Général",
       "cursor_sync": {
         "title": "Synchroniser l'apparence du curseur à distance",
         "description": "En mode curseur local, faites correspondre le texte distant, la main, le redimensionnement et d'autres formes de curseur."
-      },
-      "clipboard": {
-        "title": "Synchroniser le presse-papiers distant",
-        "description": "Activez cette option sur l’appareil de contrôle pour synchroniser les contenus du presse-papiers pris en charge."
-      },
-      "clipboard_files": {
-        "loading": "Vérification de la disponibilité du presse-papiers…",
-        "unavailable": "L’écriture dans le presse-papiers n’est pas disponible ici. Choisissez Cache de fichiers ou Désactivé.",
-        "title": "Lors de la copie de fichiers",
-        "clipboard": "Presse-papiers",
-        "cache": "Cache de fichiers",
-        "off": "Désactivé",
-        "description": "La version web reçoit les fichiers dans le cache. Sous Windows, l’application de bureau peut aussi les copier dans le presse-papiers. Les dossiers sont compressés en ZIP."
       },
       "emergency_shortcut": {
         "title": "Raccourci d’arrêt d’urgence de l’hôte",
         "description": "Bureau Windows uniquement. Lorsque cet ordinateur est sous contrôle à distance, ce raccourci l'arrête même lorsque l'application est en arrière-plan. Il ne réserve ni n'intercepte les clés ; d'autres applications peuvent également répondre.",
         "failed": "Impossible de mettre à jour l'écouteur de raccourci d'urgence. Le réglage précédent a été conservé. Veuillez réessayer."
       },
-      "file_drop": {
-        "title": "Glisser-déposer de fichiers distants",
-        "description": "Activez sur le contrôleur pour déposer des fichiers sur l’écran distant. Nécessite un hôte de bureau Windows et une application cible qui accepte les suppressions de fichiers. Les dossiers sont compressés en premier."
+      "gamepad_heading": "Manette",
+      "gamepad": {
+        "title": "Transmettre les manettes",
+        "description": "Transmet jusqu’à 4 manettes standard lorsque le contrôle à distance et cet interrupteur sont actifs. Aucun clic sur l’écran n’est nécessaire. Appuyez sur un bouton si le navigateur ne détecte pas encore la manette.",
+        "vibration": "Retour de vibration",
+        "vibration_description": "Transmet les vibrations du jeu à la manette connectée si le navigateur le permet. S’arrête à la fin du contrôle.",
+        "strength": "Intensité des vibrations",
+        "dead_zone": "Zone morte des sticks",
+        "dead_zone_description": "Ignore les petits mouvements des sticks pour réduire la dérive."
       },
-      "file_size_limit": {
-        "title": "Limite de taille de transfert de fichiers",
-        "description": "Partagé par glisser-déposer et copier/coller, en comptant le nombre total d'octets du fichier par opération. Par défaut : 64 Mio ; plage : 1 à 512 Mio. Les dossiers doivent s'adapter avant et après la compression ZIP. Les modifications s'appliquent à l'opération suivante."
+      "devices": {
+        "title": "Périphériques de saisie locaux",
+        "description": "Vérifiez les entrées à distance prises en charge par cet appareil. Les périphériques sont libérés et déconnectés à la fin de la session.",
+        "keyboard": "Clavier",
+        "mouse": "Souris",
+        "touchpad": "Gestes du pavé tactile",
+        "touchscreen": "Écran tactile",
+        "gamepad": "Manette",
+        "available": "Disponible",
+        "unsupported": "Non pris en charge",
+        "driverRequired": "Pilote requis",
+        "unavailable": "Indisponible",
+        "error": "Impossible de vérifier les périphériques. Réessayez.",
+        "driver_description": "Les manettes sous Windows nécessitent un pilote facultatif. Son installation demande une autorisation administrateur ; Weblink fonctionne sans élévation de privilèges. Vérifiez à nouveau après installation.",
+        "install_driver": "Guide d’installation",
+        "driver_retired": "ViGEmBus est abandonné et ne reçoit plus de mises à jour.",
+        "checking": "Vérification…",
+        "refresh": "Vérifier à nouveau"
       }
     },
     "permissions": {
@@ -812,10 +844,10 @@
       "obs_audio_setup_tip": "Configuration OBS + VB-CABLE :\n1. Paramètres OBS → Audio → Avancé → Dispositif de surveillance : Entrée CÂBLE.\n2. OBS Edit → Propriétés audio avancées → Surveillance audio : moniteur et sortie.\n3. Dans Weblink, sélectionnez Sortie CÂBLE pour Programme Audio.",
       "request_camera_permission": "Demander l'autorisation de la caméra",
       "request_microphone_permission": "Demander l'autorisation du microphone",
-      "select_system_audio_source": "Sélectionnez la source audio du système (auto)",
-      "select_program_audio": "Sélectionnez l'entrée audio du programme (Auto)",
-      "select_microphone": "Sélectionnez Microphone (Automatique)",
-      "select_camera": "Sélectionnez Appareil photo (Auto)",
+      "select_system_audio_source": "Sélectionnez la source audio du système (Valeur système par défaut)",
+      "select_program_audio": "Sélectionnez l'entrée audio du programme (Valeur système par défaut)",
+      "select_microphone": "Sélectionnez Microphone (Valeur système par défaut)",
+      "select_camera": "Sélectionnez Appareil photo (Valeur système par défaut)",
       "open_screen": "Écran ouvert",
       "open_media_device": "Périphérique multimédia ouvert",
       "current": "Actuel",
@@ -1083,6 +1115,7 @@
       "screen_backend": "Méthode de capture d'écran",
       "window_backend": "Méthode de capture de fenêtre",
       "auto_backend": "Automatique",
+      "default_backend": "Par défaut",
       "unavailable": "Indisponible",
       "search_windows": "Rechercher des fenêtres",
       "size_unknown": "Taille indisponible",
@@ -1291,7 +1324,7 @@
     "keyboard_input": "Tapez sur l'ordinateur distant",
     "text_too_long": "Le texte est trop long. Envoyez-le en petites parties.",
     "text_failed": "L'entrée n'a pas pu être entièrement envoyée. Vérifiez le texte distant avant de réessayer.",
-    "system_keyboard_stopped": "Le transfert du clavier système s'est arrêté. Cliquez sur l'écran distant pour réessayer ou désactivez les raccourcis système dans les paramètres du contrôle à distance.",
+    "system_keyboard_stopped": "La transmission du clavier système s’est arrêtée. Réactivez l’interrupteur du clavier ou désactivez les raccourcis système dans les paramètres de contrôle à distance.",
     "capture_failed": "Impossible de capturer le pointeur. Cliquez sur l'écran distant pour réessayer ou choisissez Curseur local dans les paramètres du contrôle à distance.",
     "capture_unavailable": "Cet hôte ne prend pas en charge la capture de pointeur. Choisissez Curseur local dans Paramètres du contrôle à distance.",
     "capture_hint": "Cliquez pour capturer le pointeur. Appuyez sur {{shortcut}} pour libérer le pointeur et le clavier.",
@@ -1304,6 +1337,10 @@
       "completed": "Dépôt des fichiers à distance terminé",
       "failed": "Échec du dépôt des fichiers à distance",
       "details": "Ouvrez la liste des tâches pour les détails du transfert."
-    }
+    },
+    "gamepad_enable": "Activer la transmission de la manette",
+    "gamepad_disable": "Désactiver la transmission de la manette",
+    "gamepad_unavailable": "La transmission de la manette est indisponible sur l’hôte. Vérifiez ses paramètres de contrôle à distance.",
+    "gamepad_failed": "La manette distante n’a pas pu être connectée ou ne répond plus. Vérifiez le pilote sur l’hôte, puis reconnectez la manette."
   }
 }

@@ -72,6 +72,7 @@ export const platform: PlatformRuntime = {
   mediaPermissionPolicy: "automatic",
   supportsServiceWorker: false,
   remoteControl: {
+    devices: () => invoke("remote_control_devices"),
     configureShortcut: (shortcut) =>
       invoke("remote_control_configure_shortcut", {
         shortcut,
@@ -164,10 +165,12 @@ export const platform: PlatformRuntime = {
       preview = false,
       onCandidate,
       control,
+      codecs,
     ) =>
       invoke<string>("capture_offer", {
         sessionId,
         ...(control ? { control } : {}),
+        ...(codecs ? { codecs } : {}),
         peerId,
         relayOnly,
         preview,

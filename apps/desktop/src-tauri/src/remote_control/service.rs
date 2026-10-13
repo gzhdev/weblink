@@ -9,7 +9,7 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use weblink_desktop_capture::{media::control::Port, CaptureService};
 use weblink_desktop_input::{
@@ -60,6 +60,21 @@ pub struct Service {
     observer: Mutex<Option<Observer>>,
 }
 impl Service {
+    pub fn devices(&self) -> Result<weblink_desktop_input::devices::Snapshot, String> {
+        let owner = self.owner.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(owner) = owner.filter(|owner| owner.live()) {
+            let host = owner.host.lock().unwrap_or_else(|e| e.into_inner());
+            if !host.worker.status().closed {
+                let devices = host.worker.refresh_devices().map_err(input_error)?;
+                owner.publish(host.snapshot());
+                if let Some(wake) = &host.wake {
+                    wake.unpark();
+                }
+                return Ok(devices);
+            }
+        }
+        Ok(weblink_desktop_input::session::devices())
+    }
     pub fn with_shortcut<T>(
         &self,
         use_shortcut: impl FnOnce(weblink_desktop_input::shortcut::Shortcut) -> T,
@@ -210,6 +225,7 @@ impl Service {
                 wake: None,
                 worker,
                 peers: HashMap::new(),
+                geometry_watches: Default::default(),
                 pending: None,
                 active: None,
                 text_focus: Default::default(),
@@ -230,6 +246,9 @@ impl Service {
                 let notified = weak.upgrade().is_some_and(|owner| {
                     let host = owner.host.lock().unwrap_or_else(|e| e.into_inner());
                     host.text_focus.set_waker(thread::current());
+                    host.cursor.set_waker(thread::current());
+                    host.worker
+                        .observe_pointer(Some(host.cursor.pointer_changed()));
                     host.worker.set_waker(thread::current())
                 });
                 while let Some(owner) = weak.upgrade() {
@@ -248,24 +267,27 @@ impl Service {
                         owner.watch.lock().unwrap_or_else(|e| e.into_inner()).take();
                         break;
                     }
-                    let (active, cursor) = {
+                    let wait = {
                         let mut host = owner.host.lock().unwrap_or_else(|e| e.into_inner());
                         host.tick();
                         owner.publish(host.snapshot());
-                        (!host.peers.is_empty(), host.cursor.watching())
+                        host.wait_duration(Instant::now())
                     };
                     drop(owner);
-                    // Channel arrivals wake this wait immediately. The timeout
-                    // still services safety/liveness state without incoming input.
-                    // unpark retains a token when arrival races with this park.
-                    if active || !notified {
-                        thread::park_timeout(if cursor {
-                            super::cursor::INTERVAL
-                        } else {
-                            Duration::from_millis(100)
-                        });
+                    // Channels, capture, pointer and backend status wake the owner.
+                    // Only pending consent / changed-cursor rate limiting need a
+                    // deadline. Unknown backends retain their existing safety bound.
+                    let wait = if notified {
+                        wait
                     } else {
-                        thread::park();
+                        Some(
+                            wait.unwrap_or(Duration::from_millis(100))
+                                .min(Duration::from_millis(100)),
+                        )
+                    };
+                    match wait {
+                        Some(wait) => thread::park_timeout(wait),
+                        None => thread::park(),
                     }
                 }
             })
@@ -389,6 +411,7 @@ impl Service {
         if let Signal::Grant { grant_id, .. } = &signal {
             let binding = h.peers.get(&media).ok_or("Media ended")?.binding.clone();
             h.active = Some(Active {
+                gamepad_feedback: Default::default(),
                 sequencer: Sequencer::new(
                     grant_id.clone(),
                     media.clone(),

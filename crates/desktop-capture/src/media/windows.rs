@@ -3,6 +3,7 @@ mod audio;
 mod capture;
 mod compose;
 mod control;
+mod ice;
 mod mf;
 mod pixels;
 mod presentation;
@@ -16,7 +17,7 @@ use crate::surface::{FrameSink, TextureFrame};
 use crate::Result;
 use libwebrtc::{
     media_stream_track::MediaStreamTrack,
-    peer_connection::{IceGatheringState, OfferOptions, PeerConnection, PeerConnectionState},
+    peer_connection::{IceGatheringState, OfferOptions, PeerConnection},
     peer_connection_factory::{
         native::PeerConnectionFactoryExt, ContinualGatheringPolicy, IceTransportsType,
         PeerConnectionFactory, RtcConfiguration,
@@ -53,6 +54,7 @@ pub struct MediaSession {
     peers: Mutex<HashMap<String, MediaPeer>>,
     hardware: Mutex<HashMap<String, Arc<mf::Encoder>>>,
     encoder_id: Option<String>,
+    encoders: Vec<EncoderInfo>,
     latest: Mutex<Option<Arc<VideoFrame<libwebrtc::video_frame::I420Buffer>>>>,
     latest_sequence: AtomicU64,
     previews: Mutex<presentation::Watches>,
@@ -64,6 +66,7 @@ pub struct MediaSession {
     options: Mutex<MediaOptions>,
     notify: Arc<tokio::sync::Notify>,
     error: Mutex<Option<String>>,
+    changed: Arc<crate::lifecycle::Subscription>,
     closed: AtomicBool,
     cursor_visible: AtomicBool,
     started: Instant,
@@ -72,9 +75,26 @@ pub struct MediaSession {
 }
 
 struct MediaPeer {
+    // Keep the factory that supplied this peer's codec implementation alive.
+    _factory: PeerConnectionFactory,
+    software: bool,
+    encoding: MediaOptions,
     connection: PeerConnection,
+    gathering: Arc<ice::Gathering>,
     preview: bool,
     control: Option<control::Connection>,
+}
+impl MediaPeer {
+    fn close(&self) {
+        // Wake pending offers before detaching callbacks or closing native state.
+        self.gathering.close();
+        if let Some(control) = &self.control {
+            control.close();
+        }
+        self.connection.on_ice_gathering_state_change(None);
+        self.connection.on_ice_candidate(None);
+        self.connection.close();
+    }
 }
 
 impl MediaSession {
@@ -152,16 +172,20 @@ impl MediaSession {
 
     pub fn new(mut options: MediaOptions) -> Result<Arc<Self>> {
         options.validate()?;
-        let hardware = if options.encoder == "software" {
-            None
+        // Automatic format selection may later use VP8. Resolve the shared
+        // conversion before choosing the initial preview encoder; all formats
+        // can describe BT.601 limited range, and no join changes these pixels.
+        if options.codec.is_none() && options.color_matrix == super::color::ColorMatrix::Auto {
+            options.color_matrix = super::color::ColorMatrix::Bt601;
+        }
+        let encoders = if options.encoder == "software" {
+            Vec::new()
+        } else if options.encoder == "auto" {
+            mf::detect().unwrap_or_default()
         } else {
-            let encoders = if options.encoder == "auto" {
-                mf::detect().unwrap_or_default()
-            } else {
-                mf::detect()?
-            };
-            select_hardware_encoder(&options, encoders)?
+            mf::detect()?
         };
+        let hardware = select_hardware_encoder(&options, encoders.clone())?;
         if let Some(encoder) = &hardware {
             options
                 .codec
@@ -195,6 +219,7 @@ impl MediaSession {
         if !source.set_color_space(Some(color)) || !preview_source.set_color_space(Some(color)) {
             return Err("Invalid native video color space".into());
         }
+        let changed = Arc::new(crate::lifecycle::Subscription::default());
         let session = Arc::new(Self {
             // 0..0 asks the receiver to decode and present complete frames
             // immediately, without a second presentation queue. In Chromium,
@@ -206,12 +231,17 @@ impl MediaSession {
             audio: options
                 .audio
                 .then(|| {
-                    audio::Loopback::start(options.audio_sample_rate, options.audio_channel_count)
+                    audio::Loopback::start(
+                        options.audio_sample_rate,
+                        options.audio_channel_count,
+                        changed.clone(),
+                    )
                 })
                 .transpose()?,
             peers: Mutex::new(HashMap::new()),
             hardware: Mutex::new(HashMap::new()),
             encoder_id,
+            encoders,
             latest: Mutex::new(None),
             latest_sequence: AtomicU64::new(0),
             previews: Mutex::new(Default::default()),
@@ -222,6 +252,7 @@ impl MediaSession {
             options: Mutex::new(options),
             notify: Arc::new(tokio::sync::Notify::new()),
             error: Mutex::new(None),
+            changed,
             closed: AtomicBool::new(false),
             cursor_visible: AtomicBool::new(true),
             started: Instant::now(),
@@ -254,13 +285,15 @@ impl MediaSession {
                 return Err(error);
             }
         }
-        for encoder in self
+        for (id, encoder) in self
             .hardware
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .values()
+            .iter()
         {
-            encoder.update_options(next.clone());
+            if let Some(peer) = peers.get(id) {
+                encoder.update_options(settings.apply(&peer.encoding)?);
+            }
         }
         let resize = (current.max_width, current.max_height) != (next.max_width, next.max_height);
         *current = next;
@@ -331,6 +364,19 @@ impl MediaSession {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
             .or_else(|| self.audio.as_ref().and_then(audio::Loopback::error))
+    }
+
+    fn fail(&self, error: String) {
+        *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+        self.changed.notify();
+    }
+
+    pub(crate) fn set_changed(&self, changed: crate::lifecycle::Changed) {
+        self.changed.set(changed);
+        // An audio/conversion failure may have happened before the owner attached.
+        if self.error().is_some() {
+            self.changed.notify();
+        }
     }
 
     fn reap_failed_encoders(&self) {
@@ -454,7 +500,7 @@ impl MediaSession {
         relay: bool,
         preview: bool,
     ) -> Result<String> {
-        self.create_offer(id, servers, relay, preview, None, None)
+        self.create_offer(id, servers, relay, preview, None, None, None)
             .await
     }
 
@@ -466,7 +512,7 @@ impl MediaSession {
         preview: bool,
         candidates: CandidateHandler,
     ) -> Result<String> {
-        self.create_offer(id, servers, relay, preview, Some(candidates), None)
+        self.create_offer(id, servers, relay, preview, Some(candidates), None, None)
             .await
     }
 
@@ -479,13 +525,62 @@ impl MediaSession {
         port: Arc<dyn super::control::Port>,
     ) -> Result<String> {
         let result = self
-            .create_offer(id, servers, relay, false, candidates, Some(port.clone()))
+            .create_offer(
+                id,
+                servers,
+                relay,
+                false,
+                candidates,
+                Some(port.clone()),
+                None,
+            )
             .await;
         if result.is_err() {
             port.closed();
         }
         result
     }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn offer_configured(
+        &self,
+        id: String,
+        servers: Vec<IceServer>,
+        relay: bool,
+        preview: bool,
+        candidates: Option<CandidateHandler>,
+        port: Option<Arc<dyn super::control::Port>>,
+        codecs: Option<super::SendCodecs>,
+    ) -> Result<String> {
+        let result = self
+            .create_offer(
+                id,
+                servers,
+                relay,
+                preview,
+                candidates,
+                port.clone(),
+                codecs,
+            )
+            .await;
+        if result.is_err() {
+            if let Some(port) = port {
+                port.closed();
+            }
+        }
+        result
+    }
+
+    fn needs_steady_input(&self) -> bool {
+        self.encoder_id.is_none()
+            || self
+                .peers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .any(|peer| peer.software)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn create_offer(
         &self,
         id: String,
@@ -494,10 +589,43 @@ impl MediaSession {
         preview: bool,
         on_candidate: Option<CandidateHandler>,
         control_port: Option<Arc<dyn super::control::Port>>,
+        codecs: Option<super::SendCodecs>,
     ) -> Result<String> {
         if id.is_empty() || id.len() > 128 {
             return Err("Invalid media peer identifier".into());
         }
+        let current = self
+            .options
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let (options, encoder_id, factory) = if let Some(codecs) = codecs {
+            let options = codecs.apply(&current)?;
+            let hardware = if options.encoder == "software" {
+                None
+            } else {
+                select_hardware_encoder(&options, self.encoders.clone())?
+            };
+            if hardware.is_none() && !Self::software_codecs().contains(&codecs.video) {
+                return Err("Negotiated native video codec is unavailable".into());
+            }
+            if options.audio && !Self::audio_codecs().contains(&codecs.audio) {
+                return Err("Negotiated native audio codec is unavailable".into());
+            }
+            let factory = PeerConnectionFactory::with_screen_video_send_options(
+                libwebrtc::peer_connection_factory::VideoSendOptions {
+                    min_playout_delay_ms: 0,
+                    max_playout_delay_ms: Some(0),
+                    pacing_factor: Some(1.5),
+                    software_h264_external_frame_dropper: true,
+                },
+                hardware.is_some() && codecs.video == "video/h265",
+            )
+            .map_err(|e| e.to_string())?;
+            (options, hardware.map(|encoder| encoder.id), factory)
+        } else {
+            (current, self.encoder_id.clone(), self.factory.clone())
+        };
         let mut config = RtcConfiguration::default();
         config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
         config.ice_transport_type = if relay {
@@ -513,8 +641,7 @@ impl MediaSession {
                 password: s.credential,
             })
             .collect();
-        let pc = self
-            .factory
+        let pc = factory
             .create_peer_connection(config)
             .map_err(|e| e.to_string())?;
         let control = control_port
@@ -523,13 +650,49 @@ impl MediaSession {
             .inspect_err(|_| {
                 pc.close();
             })?;
+        let gathering = Arc::new(ice::Gathering::new());
+        let completed = gathering.clone();
+        pc.on_ice_gathering_state_change(Some(Box::new(move |state| {
+            if state == IceGatheringState::Complete {
+                completed.complete();
+            }
+        })));
+        let candidates = Arc::new(Mutex::new(Vec::new()));
+        let gathered = candidates.clone();
+        let trickle = on_candidate.is_some();
+        // Install both observers before exposing the peer to close_peer.
+        pc.on_ice_candidate(Some(Box::new(move |candidate| {
+            let candidate = IceCandidate {
+                candidate: candidate.to_string(),
+                sdp_mid: Some(candidate.sdp_mid()),
+                sdp_m_line_index: u16::try_from(candidate.sdp_mline_index()).ok(),
+            };
+            let mut list = gathered.lock().unwrap_or_else(|e| e.into_inner());
+            if list.len() < 256 {
+                list.push(candidate.clone());
+                drop(list);
+                if let Some(handler) = &on_candidate {
+                    handler(candidate);
+                }
+            }
+        })));
         {
-            let options = self.options.lock().unwrap_or_else(|e| e.into_inner());
+            // Serialize registration with live settings. Capability/factory setup
+            // above may have overlapped a settings update; preserve this peer's
+            // negotiated format while taking the newest capture limits.
+            let current = self.options.lock().unwrap_or_else(|e| e.into_inner());
+            let options = VideoSettings {
+                max_width: current.max_width,
+                max_height: current.max_height,
+                frame_rate: current.frame_rate,
+                max_bitrate: current.max_bitrate,
+                degradation_preference: current.degradation_preference.clone(),
+            }
+            .apply(&options)?;
             // Preview keeps its own congestion feedback and encoder, at the selected
             // resolution. Use the selected hardware encoder locally too; forcing a
             // software preview can trigger CPU adaptation to tiny frame dimensions.
-            let hardware = self
-                .encoder_id
+            let hardware = encoder_id
                 .as_ref()
                 .map(|id| mf::Encoder::new(id.clone(), options.clone(), preview).map(Arc::new))
                 .transpose()?;
@@ -540,9 +703,7 @@ impl MediaSession {
             } else {
                 &self.source
             };
-            let track = self
-                .factory
-                .create_video_track(&format!("screen-{id}"), source.clone());
+            let track = factory.create_video_track(&format!("screen-{id}"), source.clone());
             let transceiver = pc
                 .add_transceiver(
                     MediaStreamTrack::Video(track),
@@ -562,8 +723,7 @@ impl MediaSession {
                 })?;
             let configured = (|| {
                 if let Some(audio) = &self.audio {
-                    let track = self
-                        .factory
+                    let track = factory
                         .create_audio_track(&format!("screen-audio-{id}"), audio.source.clone());
                     let audio_transceiver = pc
                         .add_transceiver(
@@ -579,10 +739,8 @@ impl MediaSession {
                         )
                         .map_err(|e| e.to_string())?;
                     if let Some(codec) = &options.audio_codec {
-                        let mut codecs = self
-                            .factory
-                            .get_rtp_sender_capabilities(MediaType::Audio)
-                            .codecs;
+                        let mut codecs =
+                            factory.get_rtp_sender_capabilities(MediaType::Audio).codecs;
                         // Stable preference ordering keeps all negotiated fallbacks available.
                         codecs.sort_by_key(|candidate| {
                             !candidate.mime_type.eq_ignore_ascii_case(codec)
@@ -593,8 +751,7 @@ impl MediaSession {
                     }
                 }
                 {
-                    let codecs: Vec<_> = self
-                        .factory
+                    let codecs: Vec<_> = factory
                         .get_rtp_sender_capabilities(MediaType::Video)
                         .codecs
                         .into_iter()
@@ -652,7 +809,11 @@ impl MediaSession {
                 peers.insert(
                     id.clone(),
                     MediaPeer {
+                        _factory: factory.clone(),
+                        software: hardware.is_none(),
+                        encoding: options.clone(),
                         connection: pc.clone(),
+                        gathering: gathering.clone(),
                         preview,
                         control,
                     },
@@ -666,24 +827,6 @@ impl MediaSession {
             }
         }
         self.notify.notify_one();
-        let candidates = Arc::new(Mutex::new(Vec::new()));
-        let gathered = candidates.clone();
-        let trickle = on_candidate.is_some();
-        pc.on_ice_candidate(Some(Box::new(move |candidate| {
-            let candidate = IceCandidate {
-                candidate: candidate.to_string(),
-                sdp_mid: Some(candidate.sdp_mid()),
-                sdp_m_line_index: u16::try_from(candidate.sdp_mline_index()).ok(),
-            };
-            let mut list = gathered.lock().unwrap_or_else(|e| e.into_inner());
-            if list.len() < 256 {
-                list.push(candidate.clone());
-                drop(list);
-                if let Some(handler) = &on_candidate {
-                    handler(candidate);
-                }
-            }
-        })));
         let result = async {
             let offer = pc
                 .create_offer(OfferOptions::default())
@@ -698,23 +841,14 @@ impl MediaSession {
             if trickle {
                 return Ok(sdp);
             }
-            tokio::time::timeout(Duration::from_secs(15), async {
-                while pc.ice_gathering_state() != IceGatheringState::Complete {
-                    if self.closed.load(Ordering::Acquire)
-                        || pc.connection_state() == PeerConnectionState::Closed
-                    {
-                        return Err("Native media connection closed".to_string());
-                    }
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                // current_local_description is null while an offer is pending.
-                Ok(super::gathered_sdp(
-                    &sdp,
-                    &candidates.lock().unwrap_or_else(|e| e.into_inner()),
-                ))
-            })
-            .await
-            .map_err(|_| "Native ICE gathering timed out".to_string())?
+            tokio::time::timeout(Duration::from_secs(15), gathering.wait())
+                .await
+                .map_err(|_| "Native ICE gathering timed out".to_string())??;
+            // current_local_description is null while an offer is pending.
+            Ok(super::gathered_sdp(
+                &sdp,
+                &candidates.lock().unwrap_or_else(|e| e.into_inner()),
+            ))
         }
         .await;
         if result.is_err() {
@@ -787,12 +921,7 @@ impl MediaSession {
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
         if let Some(peer) = pc {
-            if let Some(control) = peer.control {
-                control.close();
-            }
-            let pc = peer.connection;
-            pc.on_ice_candidate(None);
-            pc.close();
+            peer.close();
         }
         let encoder = self
             .hardware
@@ -813,12 +942,7 @@ impl MediaSession {
         self.notify.notify_one();
         let peers = std::mem::take(&mut *self.peers.lock().unwrap_or_else(|e| e.into_inner()));
         for (_, peer) in peers {
-            if let Some(control) = peer.control {
-                control.close();
-            }
-            let pc = peer.connection;
-            pc.on_ice_candidate(None);
-            pc.close();
+            peer.close();
         }
         let encoders =
             std::mem::take(&mut *self.hardware.lock().unwrap_or_else(|e| e.into_inner()));
@@ -858,6 +982,9 @@ fn select_hardware_encoder(
     options: &MediaOptions,
     encoders: Vec<EncoderInfo>,
 ) -> Result<Option<EncoderInfo>> {
+    if options.encoder == "software" {
+        return Ok(None);
+    }
     let requested = options.codec.as_deref().unwrap_or("video/h264");
     if options.encoder == "auto" {
         Ok(encoders

@@ -29,6 +29,10 @@ import {
 } from "@/libs/domain/remote-control/pointer-options";
 
 import { DEFAULT_REMOTE_FILE_BYTES } from "../domain/protocol/remote-file-limits";
+import {
+  defaultRemoteGamepadOptions,
+  type RemoteGamepadOptions,
+} from "../domain/remote-control/gamepad-options";
 
 export type { Locale } from "@/libs/i18n/locale";
 export {
@@ -60,55 +64,6 @@ export const defaultRoomConfig: RoomConfig = {
 };
 
 const defaultAutoDownloadMaxSize = 5 * 1024 * 1024;
-
-type StoredRoomConfig = Partial<RoomConfig> & {
-  autoDownloadMaxSize?: unknown;
-};
-
-/** Move legacy size preferences out of permissions without broadening enabled rooms' limits. */
-export function resolveRoomDownloadOptions(options: {
-  autoDownloadMaxSize?: unknown;
-  roomConfigs?: Record<
-    string,
-    StoredRoomConfig | undefined
-  >;
-}): Pick<AppOption, "autoDownloadMaxSize" | "roomConfigs"> {
-  const validSize = (size: unknown): size is number =>
-    typeof size === "number" &&
-    Number.isSafeInteger(size) &&
-    size > 0;
-  const roomConfigs: AppOption["roomConfigs"] = {};
-  const savedLimits: number[] = [];
-  const enabledLimits: number[] = [];
-  for (const [id, config] of Object.entries(
-    options.roomConfigs ?? {},
-  )) {
-    if (!config) continue;
-    const { autoDownloadMaxSize, ...permissions } = config;
-    roomConfigs[id] = {
-      ...defaultRoomConfig,
-      ...permissions,
-    };
-    const limit = validSize(autoDownloadMaxSize)
-      ? autoDownloadMaxSize
-      : defaultAutoDownloadMaxSize;
-    savedLimits.push(limit);
-    if (config.autoDownloadFiles) enabledLimits.push(limit);
-  }
-  const limits = enabledLimits.length
-    ? enabledLimits
-    : savedLimits;
-  return {
-    roomConfigs,
-    autoDownloadMaxSize: validSize(
-      options.autoDownloadMaxSize,
-    )
-      ? options.autoDownloadMaxSize
-      : limits.length
-        ? Math.min(...limits)
-        : defaultAutoDownloadMaxSize,
-  };
-}
 
 export const resolveRoomConfig = (
   options: {
@@ -148,10 +103,10 @@ export const resolveClientConfig = (
 export type AppOption = {
   notifications: NotificationOptions;
   application: ApplicationOptions;
-  permissionHistoryImported: boolean;
   remotePointer: RemotePointerOptions;
   remoteTouch: RemoteTouchOptions;
   remoteKeyboard: RemoteKeyboardOptions;
+  remoteGamepad: RemoteGamepadOptions;
   /** Shared per-operation file byte limit for remote drop and clipboard. */
   remoteFileMaxSize: number;
   // Receiver
@@ -210,8 +165,8 @@ export type AppOption = {
   degradationPreference: RTCDegradationPreference;
   preferredVideoCodec: string | null;
   preferredAudioCodec: string | null;
-  audioSampleRate: number | null;
-  audioChannelCount: 1 | 2 | null;
+  audioSampleRate: number;
+  audioChannelCount: 1 | 2;
 };
 
 export function parseTurnServers(
@@ -266,6 +221,7 @@ export const signalingWebSocketUrl =
     ? (window as any).env?.VITE_WEBSOCKET_URL
     : undefined);
 
+/** Include unset optional fields: these keys also define the persisted settings shape. */
 export const getDefaultAppOptions = (): AppOption => {
   const hasNavigator = typeof navigator !== "undefined";
   return {
@@ -293,14 +249,17 @@ export const getDefaultAppOptions = (): AppOption => {
     locale: "system",
     shareServersWithOthers: true,
     backgroundImageOpacity: 0.5,
+    backgroundImage: undefined,
+    backgroundPreset: undefined,
+    redirectToClient: undefined,
     automaticDownload: false,
     autoDownloadMaxSize: defaultAutoDownloadMaxSize,
     clientConfigs: {},
-    permissionHistoryImported: false,
     roomConfigs: {},
     remotePointer: { ...defaultRemotePointerOptions },
     remoteTouch: { ...defaultRemoteTouchOptions },
     remoteKeyboard: { ...defaultRemoteKeyboardOptions },
+    remoteGamepad: { ...defaultRemoteGamepadOptions },
     remoteFileMaxSize: DEFAULT_REMOTE_FILE_BYTES,
     application: { ...defaultApplicationOptions },
     notifications: { ...defaultNotificationOptions },
@@ -316,10 +275,10 @@ export const getDefaultAppOptions = (): AppOption => {
     nativeColorMatrix: "auto",
     nativeColorRange: "limited",
     nativeScreenCaptureBackend: "auto",
-    nativeWindowCaptureBackend: "auto",
+    nativeWindowCaptureBackend: "wgc",
     preferredVideoCodec: null,
     preferredAudioCodec: null,
-    audioSampleRate: null,
-    audioChannelCount: null,
+    audioSampleRate: 48000,
+    audioChannelCount: 2,
   } satisfies AppOption;
 };

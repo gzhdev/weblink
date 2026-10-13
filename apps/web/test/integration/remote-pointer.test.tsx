@@ -18,9 +18,12 @@ import userEvent from "@testing-library/user-event";
 import { createSignal, Show } from "solid-js";
 import { reconcile } from "solid-js/store";
 import type { NativeKeyboardEvent } from "@weblink/platform";
+import type { GamepadFeedback } from "@/libs/domain/protocol/remote-control/input-devices";
 import { RemoteControlOverlay } from "@/routes/home/components/remote-control-overlay";
 import { RemoteKeyboardToggle } from "@/routes/home/components/remote-keyboard-toggle";
+import { RemoteInputToggles } from "@/routes/home/components/remote-input-toggles";
 import RemoteControlSettings from "@/components/settings/remote-control-settings";
+import TransferSettings from "@/components/settings/transfer-settings";
 import { SettingsStateProvider } from "../helpers/settings-state";
 import { platform } from "@/libs/platform/runtime";
 import { createRemoteClipboard } from "@/libs/hooks/create-remote-clipboard";
@@ -77,6 +80,18 @@ vi.mock("@/options", async () => {
   };
 });
 class Control extends EventTarget {
+  gamepadCapacity = 0;
+  gamepadSlots = () => this.gamepadCapacity;
+  watchGamepads = vi.fn(() => () => {});
+  feedback?: (feedback: GamepadFeedback) => void;
+  watchGamepadFeedback = vi.fn(
+    (listener: (feedback: GamepadFeedback) => void) => {
+      this.feedback = listener;
+      return () => {
+        this.feedback = undefined;
+      };
+    },
+  );
   value = "active";
   state = () => this.value;
   relative = true;
@@ -116,6 +131,7 @@ let request: ReturnType<typeof vi.fn>;
 let exit: ReturnType<typeof vi.fn>;
 const nativeKeyboard = platform.keyboard;
 beforeEach(() => {
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
   setAppState(reconcile(createInitialAppState()));
   fixture.control = new Control();
@@ -174,6 +190,312 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 const surface = () => screen.getByRole("application");
+it.each([
+  "disable",
+  "blur",
+  "hidden",
+  "revoke",
+  "dispose",
+  "toggle",
+])(
+  "forwards gamepads and stops vibration on %s",
+  (reason) => {
+    fixture.control.gamepadCapacity = 4;
+    setAppState(
+      "capabilities",
+      "localInput",
+      "gamepadCount",
+      1,
+    );
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    let next: FrameRequestCallback | undefined;
+    vi.spyOn(
+      window,
+      "requestAnimationFrame",
+    ).mockImplementation((callback) => {
+      next = callback;
+      return 1;
+    });
+    const cancelFrame = vi
+      .spyOn(window, "cancelAnimationFrame")
+      .mockImplementation(() => {
+        next = undefined;
+      });
+    const actuator = {
+      playEffect: vi.fn().mockResolvedValue("complete"),
+      reset: vi.fn().mockResolvedValue("complete"),
+    };
+    const read = vi.fn(() => [
+      {
+        index: 0,
+        id: "standard-pad",
+        connected: true,
+        mapping: "standard",
+        axes: [0, 0, 0, 0],
+        buttons: [],
+        vibrationActuator: actuator,
+      },
+    ]);
+    vi.stubGlobal(
+      "navigator",
+      Object.assign(Object.create(navigator), {
+        getGamepads: read,
+      }),
+    );
+    const [enabled, setEnabled] = createSignal(true);
+    const view = render(() => (
+      <>
+        <RemoteInputToggles controls={[fixture.control]} />
+        <RemoteControlOverlay enabled={enabled()} />
+      </>
+    ));
+    expect(read).not.toHaveBeenCalled();
+    expect(next).toBeDefined();
+    expect(surface()).not.toHaveFocus();
+    next!(0);
+    expect(fixture.control.input).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "gamepad",
+        action: "connect",
+      }),
+    );
+    expect(fixture.control.input).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "gamepad",
+        action: "state",
+      }),
+    );
+    const connect = fixture.control.input.mock.calls.find(
+      ([event]: [{ action: string }]) =>
+        event.action === "connect",
+    )[0];
+    surface().focus();
+    surface().blur();
+    expect(
+      fixture.control.input.mock.calls.some(
+        ([event]: [{ action: string }]) =>
+          event.action === "disconnect",
+      ),
+    ).toBe(false);
+    const feedback = {
+      id: connect.id,
+      slot: connect.slot,
+      strongMagnitude: 1,
+      weakMagnitude: 1,
+      duration: 300,
+    };
+    fixture.control.feedback(feedback);
+    expect(actuator.playEffect).toHaveBeenCalledOnce();
+    setAppState(
+      "options",
+      "remoteGamepad",
+      "vibration",
+      false,
+    );
+    expect(actuator.reset).toHaveBeenCalledOnce();
+    fixture.control.feedback(feedback);
+    expect(actuator.playEffect).toHaveBeenCalledOnce();
+    expect(
+      fixture.control.input.mock.calls.filter(
+        ([event]: [{ action: string }]) =>
+          event.action === "connect",
+      ),
+    ).toHaveLength(1);
+    setAppState(
+      "options",
+      "remoteGamepad",
+      "vibration",
+      true,
+    );
+    fixture.control.feedback(feedback);
+    if (reason === "toggle")
+      fireEvent.click(
+        screen.getByRole("switch", {
+          name: "setting.remote_control.gamepad.title",
+        }),
+      );
+    else if (reason === "disable") setEnabled(false);
+    else if (reason === "blur")
+      fireEvent(window, new Event("blur"));
+    else if (reason === "hidden") {
+      vi.spyOn(document, "hidden", "get").mockReturnValue(
+        true,
+      );
+      document.dispatchEvent(new Event("visibilitychange"));
+    } else if (reason === "dispose") view.unmount();
+    else {
+      fixture.control.value = "ready";
+      fixture.control.dispatchEvent(new Event("change"));
+    }
+    expect(actuator.reset).toHaveBeenCalledTimes(2);
+    expect(fixture.control.feedback).toBeUndefined();
+    expect(fixture.control.input).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "gamepad",
+        action: "disconnect",
+      }),
+    );
+    expect(cancelFrame).toHaveBeenCalled();
+    expect(next).toBeUndefined();
+    if (reason === "toggle") {
+      const toggle = screen.getByRole("switch", {
+        name: "setting.remote_control.gamepad.title",
+      });
+      expect(toggle).not.toBeChecked();
+      expect(appState.options.remoteGamepad.enabled).toBe(
+        false,
+      );
+      fireEvent.click(toggle);
+      expect(toggle).toBeChecked();
+      expect(next).toBeDefined();
+      next!(1);
+      expect(fixture.control.input).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "gamepad",
+          action: "connect",
+          id: expect.any(String),
+        }),
+      );
+      const connections =
+        fixture.control.input.mock.calls.filter(
+          ([event]: [{ action: string }]) =>
+            event.action === "connect",
+        );
+      expect(connections).toHaveLength(2);
+      expect(connections[1][0].id).not.toBe(connect.id);
+    }
+  },
+);
+it.each([false, true])(
+  "keeps input sessions when entering and leaving fullscreen with native keyboard=%s",
+  async (native) => {
+    fixture.control.gamepadCapacity = 4;
+    let frameId = 0;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.spyOn(
+      window,
+      "requestAnimationFrame",
+    ).mockImplementation((callback) => {
+      frames.set(++frameId, callback);
+      return frameId;
+    });
+    vi.spyOn(
+      window,
+      "cancelAnimationFrame",
+    ).mockImplementation((id) => {
+      frames.delete(id);
+    });
+    const frame = () => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach((callback) =>
+        callback(performance.now()),
+      );
+    };
+    const pad = {
+      index: 0,
+      id: "standard-pad",
+      connected: true,
+      mapping: "standard",
+      axes: [0, 0, 0, 0],
+      buttons: [],
+    };
+    vi.stubGlobal(
+      "navigator",
+      Object.assign(Object.create(navigator), {
+        getGamepads: () => [pad],
+      }),
+    );
+    const close = vi.fn(async () => {});
+    const start = vi.fn(async () => ({
+      close,
+      renew: vi.fn(async () => {}),
+    }));
+    if (native) {
+      Object.assign(platform, {
+        keyboard: {
+          supported: vi.fn(async () => true),
+          start,
+        },
+      });
+      setAppState("capabilities", "runtime", {
+        runtime: "desktop",
+        os: "windows",
+        version: null,
+        nativeScreenCapture: false,
+        displayRefreshRates: [],
+        remoteInput: true,
+        systemKeyboard: true,
+      });
+    }
+    const [enabled, setEnabled] = createSignal(true);
+    const [fullscreen, setFullscreen] = createSignal(false);
+    const [layoutVisible] = createSignal(true);
+    // MeetingTile derives enabled from fullscreen/layout. The dependencies
+    // change on presentation transitions even while the value remains true.
+    render(() => (
+      <RemoteControlOverlay
+        enabled={
+          enabled() && (fullscreen() || layoutVisible())
+        }
+      />
+    ));
+    await Promise.resolve();
+    frame();
+    const connection =
+      fixture.control.input.mock.calls.find(
+        ([event]: [{ action: string }]) =>
+          event.action === "connect",
+      )[0];
+    fixture.control.resetInput.mockClear();
+    for (const active of [true, false, true, false]) {
+      setFullscreen(active);
+      fireEvent(document, new Event("fullscreenchange"));
+      await Promise.resolve();
+      frame();
+    }
+    expect(
+      fixture.control.input.mock.calls.filter(
+        ([event]: [{ action: string }]) =>
+          event.action === "connect",
+      ),
+    ).toHaveLength(1);
+    expect(
+      fixture.control.input.mock.calls.some(
+        ([event]: [{ action: string }]) =>
+          event.action === "disconnect",
+      ),
+    ).toBe(false);
+    expect(
+      fixture.control.resetInput,
+    ).not.toHaveBeenCalled();
+    expect(
+      fixture.control.watchGamepads,
+    ).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledTimes(native ? 1 : 0);
+    expect(close).not.toHaveBeenCalled();
+    pad.axes[0] = 0.75;
+    frame();
+    expect(fixture.control.input).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "gamepad",
+        action: "state",
+        id: connection.id,
+        state: expect.objectContaining({
+          axes: [0.75, 0, 0, 0],
+        }),
+      }),
+    );
+    setEnabled(false);
+    expect(fixture.control.input).toHaveBeenCalledWith({
+      type: "gamepad",
+      action: "disconnect",
+      id: connection.id,
+      slot: connection.slot,
+    });
+    expect(close).toHaveBeenCalledTimes(native ? 1 : 0);
+  },
+);
 function mouse(phase: string, button = 0) {
   const event = new MouseEvent(`pointer${phase}`, {
     bubbles: true,
@@ -300,10 +622,17 @@ it("captures dropped files synchronously and maps the remote position without cl
   expect(drop).toHaveBeenCalledOnce();
 });
 
-it("forwards absolute pointer input and focused keyboard input by default in local-cursor mode", () => {
+it("forwards keyboard input without focusing the remote surface in local-cursor mode", () => {
   render(() => <RemoteControlOverlay enabled />);
   key();
-  expect(fixture.control.input).not.toHaveBeenCalled();
+  expect(fixture.control.input).toHaveBeenCalledWith({
+    type: "key",
+    scanCode: 0x1e,
+    extended: false,
+    down: true,
+  });
+  fireEvent.keyUp(window, { code: "KeyA" });
+  fixture.control.input.mockClear();
   click();
   expect(request).not.toHaveBeenCalled();
   expect(
@@ -344,6 +673,64 @@ it("forwards absolute pointer input and focused keyboard input by default in loc
     vertical: -20,
   });
 });
+it("keeps keyboard input active across surface blur but leaves local editors alone", async () => {
+  render(() => (
+    <>
+      <RemoteControlOverlay enabled />
+      <textarea aria-label="Local chat" />
+      <button>Local action</button>
+    </>
+  ));
+  const editor = screen.getByRole("textbox");
+  fireEvent.keyDown(window, { code: "KeyA" });
+  expect(fixture.control.input).toHaveBeenLastCalledWith({
+    type: "key",
+    scanCode: 0x1e,
+    extended: false,
+    down: true,
+  });
+  editor.focus();
+  expect(fixture.control.input).toHaveBeenLastCalledWith({
+    type: "key",
+    scanCode: 0x1e,
+    extended: false,
+    down: false,
+  });
+  fixture.control.input.mockClear();
+  fireEvent.keyDown(editor, { code: "KeyB" });
+  expect(fixture.control.input).not.toHaveBeenCalled();
+  screen
+    .getByRole("button", { name: "Local action" })
+    .focus();
+  await Promise.resolve();
+  fireEvent.keyDown(window, { code: "KeyB" });
+  expect(fixture.control.input).toHaveBeenCalledOnce();
+  surface().focus();
+  fixture.control.resetInput.mockClear();
+  surface().blur();
+  expect(fixture.control.resetInput).not.toHaveBeenCalled();
+  fireEvent.keyUp(window, { code: "KeyB" });
+  expect(fixture.control.input).toHaveBeenLastCalledWith({
+    type: "key",
+    scanCode: 0x30,
+    extended: false,
+    down: false,
+  });
+});
+
+it("releases keyboard input on window blur and only resumes in the foreground", () => {
+  render(() => <RemoteControlOverlay enabled />);
+  fireEvent.keyDown(window, { code: "KeyA" });
+  fireEvent(window, new Event("blur"));
+  expect(fixture.control.resetInput).toHaveBeenCalled();
+  fixture.control.input.mockClear();
+  fireEvent.keyDown(window, { code: "KeyB" });
+  expect(fixture.control.input).not.toHaveBeenCalled();
+  fireEvent(window, new Event("focus"));
+  fireEvent.keyDown(window, { code: "KeyB" });
+  expect(fixture.control.input).toHaveBeenCalledOnce();
+});
+
 it.each(["local", "capture"] as const)(
   "reuses the input surface across control toggles without retaining input in %s mode",
   (mode) => {
@@ -397,7 +784,8 @@ it.each(["local", "capture"] as const)(
     expect(surface()).toBe(element);
     expect(element.tabIndex).toBe(0);
     key();
-    expect(fixture.control.input).not.toHaveBeenCalled();
+    expect(fixture.control.input).toHaveBeenCalledOnce();
+    fireEvent.keyUp(window, { code: "KeyA" });
     if (mode === "capture") capture();
     else click();
     key();
@@ -717,7 +1105,7 @@ it("does not rehide the cursor when a pending fullscreen refresh runs after wind
     fixture.control.setCursorVisible,
   ).toHaveBeenLastCalledWith(true);
 });
-it("waits for a successful capture before enabling pointer and physical keyboard input", () => {
+it("requires pointer capture only for pointer input, not keyboard forwarding", () => {
   setAppState(
     "options",
     "remotePointer",
@@ -733,7 +1121,7 @@ it("waits for a successful capture before enabling pointer and physical keyboard
   mouse("move");
   fireEvent.wheel(surface(), { deltaY: 20 });
   expect(request).toHaveBeenCalledOnce();
-  expect(fixture.control.input).not.toHaveBeenCalled();
+  expect(fixture.control.input).toHaveBeenCalledOnce();
   expect(fixture.control.trackpad).not.toHaveBeenCalled();
   expect(fixture.control.move).not.toHaveBeenCalled();
   grant();
@@ -807,6 +1195,12 @@ it.each(["ctrl-alt-shift-q", "ctrl-alt-shift-x"] as const)(
     fixture.control.input.mockClear();
     key();
     expect(fixture.control.input).not.toHaveBeenCalled();
+    setAppState(
+      "options",
+      "remoteKeyboard",
+      "enabled",
+      true,
+    );
     click();
     grant();
     key();
@@ -908,7 +1302,7 @@ it.each(["mode", "blur", "unmount"])(
     expect(fixture.control.input).not.toHaveBeenCalled();
   },
 );
-it("reports a rejected capture once, leaves keys local and allows a fresh attempt", async () => {
+it("reports rejected pointer capture without disabling keyboard forwarding", async () => {
   request.mockImplementationOnce(() =>
     Promise.reject(new Error("denied")),
   );
@@ -927,7 +1321,7 @@ it("reports a rejected capture once, leaves keys local and allows a fresh attemp
   expect(fixture.error).toHaveBeenCalledWith(
     "remote_control.capture_failed",
   );
-  expect(fixture.control.input).not.toHaveBeenCalled();
+  expect(fixture.control.input).toHaveBeenCalledOnce();
   click();
   grant();
   key();
@@ -954,7 +1348,7 @@ it("does not steal a lock from a different element or capture an unsupported hos
   expect(request).not.toHaveBeenCalled();
 });
 it.each(["local", "capture"] as const)(
-  "owns native keyboard input through focus/capture and releases on exit in %s mode",
+  "owns native keyboard input without surface focus and disables forwarding on exit in %s mode",
   async (mode) => {
     setAppState("options", "remotePointer", "mode", mode);
     let receive!: (event: NativeKeyboardEvent) => void;
@@ -963,20 +1357,24 @@ it.each(["local", "capture"] as const)(
       receive = listener;
       return { close, renew: vi.fn(async () => {}) };
     });
+    const supported = vi.fn(async () => true);
     Object.assign(platform, {
-      keyboard: { supported: async () => true, start },
+      keyboard: { supported, start },
+    });
+    setAppState("capabilities", "runtime", {
+      runtime: "desktop",
+      os: "windows",
+      version: null,
+      nativeScreenCapture: false,
+      displayRefreshRates: [],
+      remoteInput: true,
+      systemKeyboard: true,
     });
     render(() => <RemoteControlOverlay enabled />);
     await Promise.resolve();
-    expect(start).not.toHaveBeenCalled();
-    surface().focus();
-    if (mode === "capture") {
-      click();
-      expect(start).not.toHaveBeenCalled();
-      grant();
-    }
-    await Promise.resolve();
     expect(start).toHaveBeenCalledOnce();
+    expect(surface()).not.toHaveFocus();
+    expect(supported).not.toHaveBeenCalled();
     fixture.control.input.mockClear();
     key();
     expect(fixture.control.input).not.toHaveBeenCalled();
@@ -1000,6 +1398,64 @@ it.each(["local", "capture"] as const)(
     });
   },
 );
+it("releases native keyboard capture for local editors and ignores late events from the previous capture", async () => {
+  const listeners: ((
+    event: NativeKeyboardEvent,
+  ) => void)[] = [];
+  const close = vi.fn(async () => {});
+  const start = vi.fn(async (_shortcut, listener) => {
+    listeners.push(listener);
+    return { close, renew: vi.fn(async () => {}) };
+  });
+  Object.assign(platform, {
+    keyboard: { supported: vi.fn(async () => true), start },
+  });
+  setAppState("capabilities", "runtime", {
+    runtime: "desktop",
+    os: "windows",
+    version: null,
+    nativeScreenCapture: false,
+    displayRefreshRates: [],
+    remoteInput: true,
+    systemKeyboard: true,
+  });
+  render(() => (
+    <>
+      <RemoteControlOverlay enabled />
+      <textarea aria-label="Local chat" />
+      <button>Local action</button>
+    </>
+  ));
+  await Promise.resolve();
+  expect(start).toHaveBeenCalledOnce();
+  screen.getByRole("textbox").focus();
+  expect(close).toHaveBeenCalledOnce();
+  fixture.control.input.mockClear();
+  listeners[0]({
+    type: "key",
+    sequence: 1,
+    timestamp: Date.now(),
+    scanCode: 0x1e,
+    extended: false,
+    down: true,
+  });
+  expect(fixture.control.input).not.toHaveBeenCalled();
+  screen
+    .getByRole("button", { name: "Local action" })
+    .focus();
+  await Promise.resolve();
+  expect(start).toHaveBeenCalledTimes(2);
+  listeners[1]({
+    type: "key",
+    sequence: 1,
+    timestamp: Date.now(),
+    scanCode: 0x1e,
+    extended: false,
+    down: true,
+  });
+  expect(fixture.control.input).toHaveBeenCalledOnce();
+});
+
 it.each([false, true])(
   "disables browser file clipboard even with custom format support (%s)",
   async (supported) => {
@@ -1028,29 +1484,29 @@ it.each([false, true])(
     );
     render(() => (
       <SettingsStateProvider>
-        <RemoteControlSettings />
+        <TransferSettings />
       </SettingsStateProvider>
     ));
     const select = screen.getByRole("button", {
-      name: /setting.remote_control.clipboard_files.title/,
+      name: /setting.remote_transfer.clipboard_files.title/,
     });
     expect(select).toBeDisabled();
     fireEvent.click(
       screen.getByRole("switch", {
-        name: "setting.remote_control.clipboard.title",
+        name: "setting.remote_transfer.clipboard.title",
       }),
     );
     await vi.waitFor(() => expect(select).toBeEnabled());
     fireEvent.keyDown(select, { key: "ArrowDown" });
     const clipboard = await screen.findByRole("option", {
-      name: "setting.remote_control.clipboard_files.clipboard",
+      name: "setting.remote_transfer.clipboard_files.clipboard",
     });
     expect(
       clipboard.getAttribute("aria-disabled") === "true",
     ).toBe(true);
     fireEvent.click(
       screen.getByRole("option", {
-        name: "setting.remote_control.clipboard_files.off",
+        name: "setting.remote_transfer.clipboard_files.off",
       }),
     );
     expect(
@@ -1094,11 +1550,11 @@ it("keeps browser file clipboard disabled across write permission changes", asyn
   );
   render(() => (
     <SettingsStateProvider>
-      <RemoteControlSettings />
+      <TransferSettings />
     </SettingsStateProvider>
   ));
   const select = screen.getByRole("button", {
-    name: /setting.remote_control.clipboard_files.title/,
+    name: /setting.remote_transfer.clipboard_files.title/,
   });
   await vi.waitFor(() => expect(select).toBeEnabled());
   permission.state = "denied";
@@ -1106,12 +1562,12 @@ it("keeps browser file clipboard disabled across write permission changes", asyn
   fireEvent.keyDown(select, { key: "ArrowDown" });
   expect(
     await screen.findByRole("option", {
-      name: "setting.remote_control.clipboard_files.clipboard",
+      name: "setting.remote_transfer.clipboard_files.clipboard",
     }),
   ).toHaveAttribute("aria-disabled", "true");
   fireEvent.click(
     screen.getByRole("option", {
-      name: "setting.remote_control.clipboard_files.off",
+      name: "setting.remote_transfer.clipboard_files.off",
     }),
   );
   permission.state = "granted";
@@ -1120,7 +1576,7 @@ it("keeps browser file clipboard disabled across write permission changes", asyn
   expect(
     (
       await screen.findByRole("option", {
-        name: "setting.remote_control.clipboard_files.clipboard",
+        name: "setting.remote_transfer.clipboard_files.clipboard",
       })
     ).getAttribute("aria-disabled"),
   ).toBe("true");
@@ -1193,7 +1649,7 @@ it("shares native discovery and permission observers across settings and repeate
     render(() => (
       <SettingsStateProvider>
         <Show when={open()}>
-          <RemoteControlSettings />
+          <TransferSettings />
           <Consumer />
           <Consumer />
         </Show>
@@ -1217,10 +1673,10 @@ it("shares native discovery and permission observers across settings and repeate
     setOpen(true);
     expect(
       screen.getByRole("button", {
-        name: /setting.remote_control.clipboard_files.title/,
+        name: /setting.remote_transfer.clipboard_files.title/,
       }),
     ).toHaveTextContent(
-      "setting.remote_control.clipboard_files.clipboard",
+      "setting.remote_transfer.clipboard_files.clipboard",
     );
     expect(discovery).toHaveBeenCalledOnce();
     expect(
@@ -1268,15 +1724,15 @@ it("waits for initial permission detection before selecting File cache in settin
   );
   render(() => (
     <SettingsStateProvider>
-      <RemoteControlSettings />
+      <TransferSettings />
     </SettingsStateProvider>
   ));
   const select = screen.getByRole("button", {
-    name: /setting.remote_control.clipboard_files.title/,
+    name: /setting.remote_transfer.clipboard_files.title/,
   });
   expect(select).toBeDisabled();
   expect(select).toHaveTextContent(
-    "setting.remote_control.clipboard_files.loading",
+    "setting.remote_transfer.clipboard_files.loading",
   );
   expect(
     appState.options.remoteKeyboard.clipboardFiles,
@@ -1286,7 +1742,7 @@ it("waits for initial permission detection before selecting File cache in settin
   );
   await waitFor(() => expect(select).toBeEnabled());
   expect(select).toHaveTextContent(
-    "setting.remote_control.clipboard_files.cache",
+    "setting.remote_transfer.clipboard_files.cache",
   );
   expect(
     appState.options.remoteKeyboard.clipboardFiles,
@@ -1466,7 +1922,105 @@ it("lets the header switch immediately disable and restore ordinary-mode keyboar
   key();
   expect(fixture.control.input).toHaveBeenCalledOnce();
 });
-it("releases ordinary-mode keyboard focus with the shared shortcut without ending control", () => {
+it("shows the gamepad header switch on connection and shares its preference with settings", () => {
+  fixture.control.gamepadCapacity = 4;
+  render(() => (
+    <RemoteInputToggles controls={[fixture.control]} />
+  ));
+  const toggle = () =>
+    screen.queryByRole("switch", {
+      name: "setting.remote_control.gamepad.title",
+    });
+  expect(toggle()).toBeNull();
+  setAppState(
+    "capabilities",
+    "localInput",
+    "gamepadCount",
+    1,
+  );
+  expect(toggle()).toBeChecked();
+  fireEvent.click(toggle()!);
+  expect(appState.options.remoteGamepad.enabled).toBe(
+    false,
+  );
+  expect(toggle()).not.toBeChecked();
+  setAppState("options", "remoteGamepad", "enabled", true);
+  expect(toggle()).toBeChecked();
+  setAppState(
+    "capabilities",
+    "localInput",
+    "gamepadCount",
+    0,
+  );
+  expect(toggle()).toBeNull();
+  expect(appState.options.remoteGamepad.enabled).toBe(true);
+  setAppState(
+    "capabilities",
+    "localInput",
+    "gamepadCount",
+    1,
+  );
+  expect(toggle()).toBeChecked();
+  fixture.control.value = "ready";
+  fixture.control.dispatchEvent(new Event("change"));
+  expect(toggle()).toBeNull();
+});
+
+it("reacts to host gamepad capability changes without requiring a new control grant", () => {
+  setAppState(
+    "capabilities",
+    "localInput",
+    "gamepadCount",
+    1,
+  );
+  const view = render(() => (
+    <RemoteInputToggles controls={[fixture.control]} />
+  ));
+  const toggle = () =>
+    screen.getByRole("switch", {
+      name: "setting.remote_control.gamepad.title",
+    });
+  expect(toggle()).toBeDisabled();
+  fireEvent.click(toggle());
+  expect(appState.options.remoteGamepad.enabled).toBe(true);
+  fixture.control.gamepadCapacity = 4;
+  fixture.control.dispatchEvent(new Event("change"));
+  expect(toggle()).toBeEnabled();
+  fixture.control.gamepadCapacity = 0;
+  fixture.control.dispatchEvent(new Event("change"));
+  expect(toggle()).toBeDisabled();
+  view.unmount();
+  fixture.control.dispatchEvent(new Event("change"));
+  expect(screen.queryByRole("switch")).toBeNull();
+});
+
+it("hides mobile keyboard forwarding until keyboard use is observed without disabling text input", () => {
+  setAppState("capabilities", "localInput", "mobile", true);
+  render(() => (
+    <RemoteInputToggles controls={[fixture.control]} />
+  ));
+  const toggle = () =>
+    screen.queryByRole("switch", {
+      name: "remote_control.keyboard_control",
+    });
+  expect(toggle()).toBeNull();
+  expect(appState.options.remoteKeyboard.enabled).toBe(
+    true,
+  );
+  setAppState(
+    "capabilities",
+    "localInput",
+    "keyboardObserved",
+    true,
+  );
+  expect(toggle()).toBeChecked();
+  fireEvent.click(toggle()!);
+  expect(toggle()).not.toBeChecked();
+  expect(appState.options.remoteKeyboard.enabled).toBe(
+    false,
+  );
+});
+it("turns off keyboard forwarding with the shared shortcut without ending control", () => {
   render(() => <RemoteControlOverlay enabled />);
   click();
   key();
@@ -1478,7 +2032,10 @@ it("releases ordinary-mode keyboard focus with the shared shortcut without endin
   fixture.control.input.mockClear();
   key();
   expect(fixture.control.input).not.toHaveBeenCalled();
-  click();
+  expect(appState.options.remoteKeyboard.enabled).toBe(
+    false,
+  );
+  setAppState("options", "remoteKeyboard", "enabled", true);
   fixture.control.input.mockClear();
   key();
   expect(fixture.control.input).toHaveBeenCalledOnce();
@@ -1487,11 +2044,11 @@ it("releases ordinary-mode keyboard focus with the shared shortcut without endin
 it("stores one shared file size limit without changing either feature switch", async () => {
   render(() => (
     <SettingsStateProvider>
-      <RemoteControlSettings />
+      <TransferSettings />
     </SettingsStateProvider>
   ));
   const select = screen.getByRole("button", {
-    name: /setting.remote_control.file_size_limit.title/,
+    name: /setting.remote_transfer.file_size_limit.title/,
   });
   expect(select).toHaveTextContent("64 MiB");
   await userEvent.click(select);
@@ -1521,11 +2078,11 @@ it("keeps a previously saved custom file limit in the selection", async () => {
   );
   render(() => (
     <SettingsStateProvider>
-      <RemoteControlSettings />
+      <TransferSettings />
     </SettingsStateProvider>
   ));
   const select = screen.getByRole("button", {
-    name: /setting.remote_control.file_size_limit.title/,
+    name: /setting.remote_transfer.file_size_limit.title/,
   });
   expect(select).toHaveTextContent("99 MiB");
   await userEvent.click(select);
@@ -1539,30 +2096,47 @@ it("keeps a previously saved custom file limit in the selection", async () => {
     64 * 1024 * 1024,
   );
 });
-it("persists cursor, clipboard and file drop switches independently", () => {
+it("keeps remote file settings in Transfers and preserves independent switches across tabs", () => {
+  const [transfer, setTransfer] = createSignal(false);
   render(() => (
     <SettingsStateProvider>
-      <RemoteControlSettings />
+      <Show
+        when={transfer()}
+        fallback={<RemoteControlSettings />}
+      >
+        <TransferSettings />
+      </Show>
     </SettingsStateProvider>
   ));
   const cursor = screen.getByRole("switch", {
     name: "setting.remote_control.cursor_sync.title",
   });
+  expect(cursor).toBeChecked();
+  expect(
+    screen.queryByRole("switch", {
+      name: "setting.remote_transfer.file_drop.title",
+    }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("switch", {
+      name: "setting.remote_transfer.clipboard.title",
+    }),
+  ).toBeNull();
+  fireEvent.click(cursor);
+  setTransfer(true);
   const clipboard = screen.getByRole("switch", {
-    name: "setting.remote_control.clipboard.title",
+    name: "setting.remote_transfer.clipboard.title",
   });
   const drop = screen.getByRole("switch", {
-    name: "setting.remote_control.file_drop.title",
+    name: "setting.remote_transfer.file_drop.title",
   });
   expect(drop).not.toBeChecked();
-  expect(cursor).toBeChecked();
   expect(clipboard).not.toBeChecked();
   expect(
     screen.getByRole("heading", {
-      name: "setting.remote_control.general_heading",
+      name: "setting.remote_transfer.title",
     }),
   ).toBeInTheDocument();
-  fireEvent.click(cursor);
   fireEvent.click(clipboard);
   fireEvent.click(drop);
   expect(appState.options.remotePointer.fileDrop).toBe(
@@ -1577,6 +2151,23 @@ it("persists cursor, clipboard and file drop switches independently", () => {
   expect(appState.options.remoteKeyboard.clipboard).toBe(
     true,
   );
+  setTransfer(false);
+  expect(
+    screen.getByRole("switch", {
+      name: "setting.remote_control.cursor_sync.title",
+    }),
+  ).not.toBeChecked();
+  setTransfer(true);
+  expect(
+    screen.getByRole("switch", {
+      name: "setting.remote_transfer.file_drop.title",
+    }),
+  ).toBeChecked();
+  expect(
+    screen.getByRole("switch", {
+      name: "setting.remote_transfer.clipboard.title",
+    }),
+  ).toBeChecked();
 });
 it("keeps ownership handoff while disabling appearance resources", () => {
   render(() => <RemoteControlOverlay enabled />);

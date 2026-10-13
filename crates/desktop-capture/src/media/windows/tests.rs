@@ -6,14 +6,45 @@ use libwebrtc::{
 };
 mod latency_probe;
 
+#[test]
+fn capture_owner_observes_media_errors_before_or_after_subscription_and_detaches() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for late in [false, true] {
+            let media = MediaSession::new(MediaOptions {
+                encoder: "software".into(),
+                ..Default::default()
+            })
+            .unwrap();
+            let (send, receive) = std::sync::mpsc::channel();
+            let changed = crate::lifecycle::Changed::new(move || {
+                let _ = send.send(());
+            });
+            if late {
+                media.fail("test conversion failure".into());
+            }
+            media.set_changed(changed.clone());
+            if !late {
+                media.fail("test conversion failure".into());
+            }
+            receive.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(media.error().as_deref(), Some("test conversion failure"));
+            changed.acknowledge();
+            media.set_changed(Default::default());
+            media.fail("late failure after detach".into());
+            assert!(receive.try_recv().is_err());
+            media.close();
+        }
+    });
+}
+
 // Synchronously drain a synthetic frame in tests that inspect converted pixels.
-// Production polls on its worker without waiting in a graphics call.
+// Production awaits GPU completion events without waiting in a graphics call.
 impl MediaSession {
     pub(super) fn flush(self: &Arc<Self>) -> Result<()> {
         let _preview = self.subscribe_preview(true, |_| true)?;
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut work = self.capture_step(true)?;
-        while work.pending || work.dirty {
+        while work.pending.is_some() || work.dirty {
             if Instant::now() >= deadline {
                 return Err("Synthetic readback did not complete".into());
             }
@@ -37,6 +68,57 @@ fn discovers_process_loopback_formats_without_starting_capture() {
         assert!(crate::media::AUDIO_CHANNEL_COUNTS.contains(&format.channel_count));
     }
     println!("Available process-loopback formats: {formats:?}");
+}
+
+#[test]
+fn closing_a_native_peer_or_session_cancels_pending_ice_waiters() {
+    use std::{
+        future::{poll_fn, Future},
+        task::Poll,
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for close_session in [false, true] {
+            let media = MediaSession::new(MediaOptions {
+                encoder: "software".into(),
+                ..Default::default()
+            })
+            .unwrap();
+            let pc = media
+                .factory
+                .create_peer_connection(Default::default())
+                .unwrap();
+            let gathering = Arc::new(ice::Gathering::new());
+            media.peers.lock().unwrap().insert(
+                "pending".into(),
+                MediaPeer {
+                    _factory: media.factory.clone(),
+                    software: true,
+                    encoding: media.options.lock().unwrap().clone(),
+                    connection: pc,
+                    gathering: gathering.clone(),
+                    preview: false,
+                    control: None,
+                },
+            );
+            let mut waiting = Box::pin(gathering.wait());
+            poll_fn(|cx| {
+                assert!(waiting.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            if close_session {
+                media.close();
+            } else {
+                media.close_peer("pending");
+            }
+            gathering.complete();
+            let result = tokio::time::timeout(Duration::from_secs(1), waiting)
+                .await
+                .unwrap();
+            assert_eq!(result.unwrap_err(), "Native media connection closed");
+            assert!(media.peers.lock().unwrap().is_empty());
+        }
+    });
 }
 
 #[test]
@@ -93,6 +175,14 @@ impl Drop for Receiver {
 }
 
 async fn connect(media: &MediaSession, id: &str, preview: bool) -> Result<Receiver> {
+    connect_with_codecs(media, id, preview, None).await
+}
+async fn connect_with_codecs(
+    media: &MediaSession,
+    id: &str,
+    preview: bool,
+    codecs: Option<super::super::SendCodecs>,
+) -> Result<Receiver> {
     let factory = PeerConnectionFactory::default();
     let mut config = RtcConfiguration::default();
     config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
@@ -117,7 +207,9 @@ async fn connect(media: &MediaSession, id: &str, preview: bool) -> Result<Receiv
         .on_ice_candidate(Some(Box::new(move |candidate| {
             gathered.lock().unwrap().push(candidate.to_string());
         })));
-    let offer = media.offer(id.into(), vec![], false, preview).await?;
+    let offer = media
+        .offer_configured(id.into(), vec![], false, preview, None, None, codecs)
+        .await?;
     receiver
         .pc
         .set_remote_description(
@@ -166,6 +258,111 @@ async fn decoded(receiver: &Receiver) -> u32 {
             }
         })
         .sum()
+}
+
+#[test]
+fn negotiated_formats_switch_transports_without_replacing_the_media_source() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let media = MediaSession::new(MediaOptions {
+            max_width: 320,
+            max_height: 180,
+            frame_rate: 20,
+            ..Default::default()
+        })
+        .unwrap();
+        let original_color =
+            serde_json::to_value(media.options.lock().unwrap().color_space()).unwrap();
+        assert_eq!(original_color["matrix"], "smpte170m");
+        for (index, codec) in ["video/h264", "video/vp8", "video/h264"]
+            .into_iter()
+            .enumerate()
+        {
+            let id = format!("negotiated-{index}");
+            let receiver = connect_with_codecs(
+                &media,
+                &id,
+                false,
+                Some(super::super::SendCodecs {
+                    video: codec.into(),
+                    audio: "audio/opus".into(),
+                }),
+            )
+            .await
+            .unwrap();
+            let frame = VideoFrame::new(
+                VideoRotation::VideoRotation0,
+                I420Buffer::new_black(320, 180),
+            );
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while decoded(&receiver).await < 3 {
+                    media.publish_frame(&frame);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("Negotiated format did not decode");
+            let before = decoded(&receiver).await;
+            media
+                .update_video_settings(VideoSettings {
+                    max_width: 320,
+                    max_height: 180,
+                    frame_rate: 15,
+                    max_bitrate: 500_000,
+                    degradation_preference: "balanced".into(),
+                })
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while decoded(&receiver).await < before + 3 {
+                    media.publish_frame(&frame);
+                    tokio::time::sleep(Duration::from_millis(67)).await;
+                }
+            })
+            .await
+            .expect("Live settings lost the negotiated encoder");
+            let stats = media.stats(&id).await.unwrap();
+            assert!(
+                stats
+                    .iter()
+                    .any(|sample| sample.codec.eq_ignore_ascii_case(codec)),
+                "Wrong codec: {stats:?}"
+            );
+            if codec == "video/vp8" {
+                assert!(media.needs_steady_input());
+            }
+            assert_eq!(
+                serde_json::to_value(media.options.lock().unwrap().color_space()).unwrap(),
+                original_color
+            );
+            media.close_peer(&id);
+            assert!(media.peers.lock().unwrap().is_empty());
+            assert!(media.hardware.lock().unwrap().is_empty());
+            assert!(!media.closed.load(Ordering::Acquire));
+        }
+        if MediaSession::codecs()
+            .iter()
+            .any(|codec| codec == "video/h265")
+        {
+            let offer = media
+                .offer_configured(
+                    "hevc".into(),
+                    vec![],
+                    false,
+                    false,
+                    Some(Box::new(|_| {})),
+                    None,
+                    Some(super::super::SendCodecs {
+                        video: "video/h265".into(),
+                        audio: "audio/opus".into(),
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(offer.contains("H265/90000"));
+            assert!(!offer.contains("H264/90000"));
+            media.close_peer("hevc");
+        }
+        media.close();
+    });
 }
 
 #[test]
@@ -722,6 +919,8 @@ fn cursor_visibility_recomposes_a_static_frame_without_losing_its_shape() {
 // determines the software encoder's initial per-frame budget after a static scene.
 #[test]
 fn software_cached_frames_keep_cadence_and_follow_live_fps() {
+    use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
+
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let media = MediaSession::new(MediaOptions {
             encoder: "software".into(),
@@ -734,10 +933,40 @@ fn software_cached_frames_keep_cadence_and_follow_live_fps() {
         })
         .unwrap();
         let receiver = connect(&media, "cached", true).await.unwrap();
-        *media.latest.lock().unwrap() = Some(Arc::new(VideoFrame::new(
-            VideoRotation::VideoRotation0,
-            I420Buffer::new_black(640, 480),
-        )));
+        // Seed one real capture arrival. Writing `latest` directly skips the
+        // publication sequence and wakeup that arm cached-frame scheduling.
+        let (device, context) = windows_capture::d3d11::create_d3d_device().unwrap();
+        let pixels = [0u8, 0, 0, 255].repeat(640 * 480);
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: 640,
+            Height: 480,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            ..Default::default()
+        };
+        let data = D3D11_SUBRESOURCE_DATA {
+            pSysMem: pixels.as_ptr().cast(),
+            SysMemPitch: 640 * 4,
+            SysMemSlicePitch: 0,
+        };
+        let mut texture = None;
+        unsafe { device.CreateTexture2D(&desc, Some(&data), Some(&mut texture)) }.unwrap();
+        media
+            .frame(TextureFrame {
+                device: &device,
+                context: &context,
+                texture: &texture.unwrap(),
+                rotation: Rotation::Identity,
+                cursor: None,
+            })
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(10), async {
             while decoded(&receiver).await < 5 {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -745,6 +974,7 @@ fn software_cached_frames_keep_cadence_and_follow_live_fps() {
         })
         .await
         .unwrap();
+        assert_eq!(media.latest_sequence.load(Ordering::Acquire), 1);
         let before = decoded(&receiver).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
         let fast = decoded(&receiver).await - before;
@@ -773,6 +1003,9 @@ fn software_cached_frames_keep_cadence_and_follow_live_fps() {
             (6..=13).contains(&slow),
             "Cached frames ignored the live FPS limit: {slow}"
         );
+        // Both cadence measurements reused the same captured frame, including
+        // after the settings update; no new arrival kept the worker awake.
+        assert_eq!(media.latest_sequence.load(Ordering::Acquire), 1);
         assert_eq!(media.peers.lock().unwrap().len(), 1);
         media.close();
         assert!(media.latest.lock().unwrap().is_none());
@@ -826,6 +1059,10 @@ fn hardware_selection_matches_codec_and_preserves_h264_default() {
     );
     options.encoder = "auto".into();
     options.codec = Some("video/vp9".into());
+    assert!(select_hardware_encoder(&options, encoders())
+        .unwrap()
+        .is_none());
+    options.encoder = "software".into();
     assert!(select_hardware_encoder(&options, encoders())
         .unwrap()
         .is_none());

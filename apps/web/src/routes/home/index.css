@@ -249,7 +249,7 @@
   @apply size-7;
 }
 .meeting-tile-actions {
-  @apply p-0.75 absolute bottom-2 right-2 z-20 flex rounded-lg bg-[#10151cd9] text-white opacity-0;
+  @apply p-0.75 absolute bottom-2 right-2 z-20 flex rounded-lg bg-[#10151cb3] text-white opacity-0;
   --meeting-tile-action-size: --spacing(8.5);
   --meeting-tile-action-gap: --spacing(0.75);
   transition: opacity 0.15s;
@@ -291,6 +291,7 @@
   outline-color: white;
 }
 .meeting-tile:hover .meeting-tile-actions,
+.meeting-tile-actions[data-expanded],
 .meeting-tile:focus-within .meeting-tile-actions,
 .meeting-tile-video:fullscreen:hover .meeting-tile-actions,
 .meeting-tile-video:fullscreen:focus-within
@@ -298,7 +299,7 @@
   /* Fullscreen letterboxing extends beyond the original tile's hover area. */
   @apply opacity-100;
 }
-@media (hover: none), (pointer: coarse) {
+@media (hover: none), (any-pointer: coarse) {
   .meeting-tile-actions {
     @apply opacity-100;
   }

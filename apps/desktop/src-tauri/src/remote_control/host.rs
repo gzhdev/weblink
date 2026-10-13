@@ -1,6 +1,8 @@
 use super::{
-    binding::GeometrySource, input_error, transport::Endpoint, ControlEvent, Observer, Pending,
-    Snapshot,
+    binding::{GeometryChanges, GeometrySource, GeometryWatches},
+    input_error,
+    transport::Endpoint,
+    ControlEvent, Observer, Pending, Snapshot,
 };
 use std::{
     collections::HashMap,
@@ -20,7 +22,9 @@ pub(super) struct Peer {
     pub(super) endpoint: Arc<Endpoint>,
     pub(super) capture: Arc<dyn GeometrySource>,
     pub(super) ready: bool,
-    pub(super) last_geometry: Instant,
+    devices: Vec<weblink_desktop_input::devices::Capability>,
+    geometry_revision: u64,
+    geometry_changes: Arc<GeometryChanges>,
     pub(super) display: weblink_desktop_input::input::Rect,
     cursor_visibility: bool,
     cursor_visible: bool,
@@ -47,11 +51,14 @@ pub(super) struct Consent {
 pub(super) struct Active {
     pub(super) grant: Grant,
     pub(super) sequencer: Sequencer,
+    pub(super) gamepad_feedback:
+        HashMap<u8, (String, weblink_desktop_input::gamepad::Rumble, Instant)>,
 }
 pub(super) struct Host {
     pub(super) wake: Option<std::thread::Thread>,
     pub(super) worker: Box<dyn Session>,
     pub(super) peers: HashMap<String, Peer>,
+    pub(super) geometry_watches: GeometryWatches,
     pub(super) pending: Option<Consent>,
     pub(super) active: Option<Active>,
     pub(super) cursor: super::cursor::Monitor,
@@ -68,6 +75,9 @@ impl Host {
         let binding = target.binding.clone();
         let media = binding.target.media_id.clone();
         let endpoint = Arc::new(Endpoint::new(self.wake.clone()));
+        let geometry_changes =
+            self.geometry_watches
+                .subscribe(capture.clone(), &binding, self.wake.clone())?;
         if self.peers.contains_key(&media)
             || !self
                 .worker
@@ -87,7 +97,9 @@ impl Host {
                 endpoint: endpoint.clone(),
                 capture,
                 ready: false,
-                last_geometry: Instant::now(),
+                devices: vec![],
+                geometry_revision: 0,
+                geometry_changes,
             },
         );
         if let Some(wake) = &self.wake {
@@ -96,14 +108,16 @@ impl Host {
         Ok(endpoint)
     }
     pub(super) fn snapshot(&self) -> Snapshot {
+        let status = self.worker.status();
         Snapshot {
+            devices: status.devices,
             grant_id: self.active.as_ref().map(|a| a.grant.id.clone()),
             pending: self.pending.as_ref().map(|p| p.view.clone()),
             client_id: self
                 .active
                 .as_ref()
                 .map(|a| a.grant.binding.client_id.clone()),
-            closed: self.worker.status().closed,
+            closed: status.closed,
         }
     }
     pub(super) fn end_grant(&mut self) {
@@ -150,6 +164,7 @@ impl Host {
             self.text_focus.cancel();
             self.cursor.cancel();
             active.sequencer.suspend();
+            active.gamepad_feedback.clear();
             if let Some(peer) = self.peers.get_mut(&active.grant.binding.target.media_id) {
                 peer.set_cursor_visible(true);
                 peer.endpoint.send(&serde_json::json!({"type":"state","grantId":active.grant.id,"inputEpoch":active.sequencer.epoch(),"active":false}));
@@ -198,8 +213,9 @@ impl Host {
         let ids: Vec<_> = self.peers.keys().cloned().collect();
         for id in ids {
             let peer = self.peers.get_mut(&id).unwrap();
-            if now.duration_since(peer.last_geometry) >= Duration::from_millis(100) {
-                peer.last_geometry = now;
+            let geometry_revision = peer.geometry_changes.revision();
+            if peer.geometry_revision != geometry_revision {
+                peer.geometry_revision = geometry_revision;
                 if !peer.capture.is_current(&peer.binding) {
                     peer.endpoint.closed();
                 }
@@ -213,6 +229,7 @@ impl Host {
                 continue;
             }
             if !peer.ready && peer.endpoint.is_open() {
+                let devices = self.worker.status().devices.capabilities;
                 peer.ready = peer.endpoint.send(&serde_json::json!({
                     "type": "ready",
                     "target": peer.binding.target,
@@ -223,10 +240,19 @@ impl Host {
                     "persistentControl": true,
                     "fileDrop": cfg!(windows),
                     "keyboard": true,
+                    "inputDevices": devices,
                     "textInput": true,
                     "touchpadPan": self.worker.status().pan_supported,
                     "touchContacts": if self.worker.status().touch_supported { weblink_desktop_input::touch::MAX_CONTACTS } else { 0 },
                 }));
+                if peer.ready {
+                    peer.devices = devices;
+                }
+            } else if peer.ready {
+                let devices = self.worker.status().devices.capabilities;
+                if peer.devices != devices && peer.endpoint.send(&serde_json::json!({ "type": "input-capabilities", "inputDevices": devices })) {
+                    peer.devices = devices;
+                }
             }
             let endpoint = peer.endpoint.clone();
             if endpoint.take_interrupted()
@@ -267,8 +293,82 @@ impl Host {
             }
         }
         self.sample_cursor();
+        self.sample_gamepad_feedback(now);
+    }
+    pub(super) fn wait_duration(&self, now: Instant) -> Option<Duration> {
+        let consent = self
+            .pending
+            .as_ref()
+            .map(|p| (p.requested + Duration::from_secs(30)).saturating_duration_since(now));
+        consent
+            .into_iter()
+            .chain(self.cursor.wait_duration(now))
+            .chain(
+                self.gamepad_feedback_active()
+                    .then_some(Duration::from_millis(16)),
+            )
+            .min()
+    }
+    fn gamepad_feedback_active(&self) -> bool {
+        let status = self.worker.status();
+        self.active.as_ref().is_some_and(|active| {
+            active.sequencer.active()
+                && !status.input_suspended
+                && status.grant.as_ref() == Some(&active.grant)
+                && status.devices.mounted.iter().any(|device| {
+                    device.kind == weblink_desktop_input::devices::Kind::Gamepad
+                        && device.state == weblink_desktop_input::devices::State::Mounted
+                })
+        })
+    }
+    fn sample_gamepad_feedback(&mut self, now: Instant) {
+        if !self.gamepad_feedback_active() {
+            return;
+        }
+        let feedback = self.worker.gamepad_feedback();
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        let Some(peer) = self.peers.get(&active.grant.binding.target.media_id) else {
+            return;
+        };
+        if peer.endpoint.is_closed() || !peer.capture.is_current(&peer.binding) {
+            return;
+        }
+        active
+            .gamepad_feedback
+            .retain(|slot, _| feedback.iter().any(|f| f.slot == *slot));
+        for value in feedback {
+            if value.grant != active.grant {
+                continue;
+            }
+            if active
+                .gamepad_feedback
+                .get(&value.slot)
+                .is_some_and(|(id, rumble, at)| {
+                    id == &value.id
+                        && *rumble == value.rumble
+                        && (*rumble == Default::default()
+                            || now.saturating_duration_since(*at) < Duration::from_millis(100))
+                })
+            {
+                continue;
+            }
+            if peer.endpoint.send(&serde_json::json!({
+                "type": "gamepad-feedback", "grantId": active.grant.id,
+                "inputEpoch": active.sequencer.epoch(), "slot": value.slot, "id": value.id,
+                "strongMagnitude": f64::from(value.rumble.strong) / 255.0,
+                "weakMagnitude": f64::from(value.rumble.weak) / 255.0,
+                "duration": 300,
+            })) {
+                active
+                    .gamepad_feedback
+                    .insert(value.slot, (value.id, value.rumble, now));
+            }
+        }
     }
     fn sample_cursor(&mut self) {
+        self.cursor.observe_activity(self.worker.pointer_activity());
         if !self.cursor.due(Instant::now()) {
             return;
         }
@@ -286,7 +386,6 @@ impl Host {
             self.cursor.cancel();
             return;
         }
-        self.cursor.observe_activity(self.worker.pointer_activity());
         if let Some(update) = self.cursor.sample(Instant::now()) {
             let watch = &update.watch;
             if self.active.as_ref().is_some_and(|a| {
@@ -323,11 +422,19 @@ impl Host {
                 wire::PointerEvent::Activate | wire::PointerEvent::Pause
             );
             let epoch = packet.input_epoch.clone();
+            let gamepad = match &packet.event {
+                wire::PointerEvent::Gamepad { event } => {
+                    let (slot, id) = event.identity();
+                    Some((slot, id.to_owned()))
+                }
+                _ => None,
+            };
             let events = active.sequencer.accept_at(packet, movement, at);
             if events.is_empty() {
                 return;
             }
             if transition {
+                active.gamepad_feedback.clear();
                 self.text_focus.cancel();
                 self.cursor.cancel();
             }
@@ -342,6 +449,17 @@ impl Host {
             if !movement {
                 if let Ok(status) = self.worker.flush() {
                     if status.grant.as_ref() == Some(&active.grant) {
+                        if let Some((slot, id)) =
+                            gamepad.filter(|_| !status.input_suspended && active.sequencer.active())
+                        {
+                            let mounted = status.devices.mounted.iter().any(|device| {
+                                device.kind == weblink_desktop_input::devices::Kind::Gamepad
+                                    && device.slot == slot
+                                    && device.state
+                                        == weblink_desktop_input::devices::State::Mounted
+                            });
+                            peer.endpoint.send(&serde_json::json!({ "type": "gamepad-status", "grantId": active.grant.id, "inputEpoch": epoch, "slot": slot, "id": id, "mounted": mounted }));
+                        }
                         if status.input_suspended {
                             active.sequencer.suspend();
                         }

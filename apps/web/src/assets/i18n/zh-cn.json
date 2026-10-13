@@ -188,6 +188,30 @@
         "description": "所有允许自动下载的房间共用此上限。超过上限的文件仍可手动下载。"
       }
     },
+    "remote_transfer": {
+      "title": "远程文件与剪贴板",
+      "file_drop": {
+        "title": "远程文件拖放",
+        "description": "在控制端开启后，可将文件拖入远端画面。需要 Windows 桌面被控端，目标程序需支持文件拖放。目录会打包为 ZIP。"
+      },
+      "clipboard": {
+        "title": "同步远控剪贴板",
+        "description": "在控制端开启，同步当前环境支持的剪贴板内容。"
+      },
+      "clipboard_files": {
+        "loading": "正在检测剪贴板能力…",
+        "unavailable": "当前环境无法写入文件剪贴板，可选择文件缓存或关闭。",
+        "title": "复制文件时",
+        "clipboard": "剪贴板",
+        "cache": "文件缓存",
+        "off": "关闭",
+        "description": "Web 端通过文件缓存接收文件，Windows 桌面端还可写入剪贴板。目录压缩为 ZIP。"
+      },
+      "file_size_limit": {
+        "title": "文件传输大小限制",
+        "description": "拖放与复制粘贴共用，每次操作按文件总大小计算。默认 64 MiB，可设置 1–512 MiB；目录压缩前后均需符合限制。修改对下一次操作生效。"
+      }
+    },
     "advanced_settings": {
       "advanced_connection": {
         "title": "高级连接设置",
@@ -261,10 +285,10 @@
       },
       "native_capture": "屏幕采集与编码",
       "native_encoder": "屏幕共享视频编码",
-      "native_encoder_auto": "自动（优先兼容的硬件编码器）",
+      "native_encoder_auto": "自动",
       "hardware": "硬件编码",
       "software": "软件编码",
-      "native_encoder_description": "选择桌面端的采集方式和视频编码，下次共享时生效。",
+      "native_encoder_description": "自动会交换解码能力，从所有连接端共同支持的格式中优先选择硬件编码。成员变化可能重连媒体通道，采集继续运行。手动编码修改在下次共享时生效。",
       "native_advanced": "当前编码的高级选项",
       "readback_buffers": "GPU 读回缓冲",
       "readback_buffers_1": "单缓冲",
@@ -272,7 +296,7 @@
       "readback_buffers_3": "三缓冲",
       "readback_buffers_description": "更多缓冲可重叠处理帧，但会增加显存占用，也可能增加延迟。下次共享时生效。",
       "color_matrix": "色彩矩阵",
-      "color_auto": "自动（匹配编码格式）",
+      "color_auto": "自动",
       "color_range": "颜色范围",
       "color_range_limited": "有限范围（16–235，兼容优先）",
       "color_range_full": "完整范围（0–255）",
@@ -285,7 +309,7 @@
         "unavailable": "当前不可用",
         "codec": {
           "title": "优先音频编码",
-          "unsupported": "暂时无法读取音频编码能力，将自动协商兼容的编码。"
+          "unsupported": "暂时无法读取编码能力。自动选择会先使用基础兼容格式，待能力明确后再调整。"
         },
         "sample_rate": {
           "title": "音频采样率"
@@ -295,17 +319,18 @@
           "mono": "单声道",
           "stereo": "立体声（双声道）"
         },
-        "description": "根据音源能力选择采样率和声道，下次采集时生效。",
+        "description": "默认 48 kHz、立体声。修改在下次采集时生效；浏览器可能采用设备支持的相近格式。",
         "sampling_loading": "正在读取音频格式…",
         "codecs_loading": "正在读取音频编码…",
         "sampling_failed": "系统音频格式暂不可用。",
-        "sampling_unknown": "音源尚未提供采样选项，可保持自动。"
+        "sampling_unknown": "音源尚未提供采样能力。默认首选 48 kHz、立体声。",
+        "default": "默认"
       },
       "encoders_loading": "正在检测视频编码器…",
       "backends_loading": "正在读取采集方式…",
       "backends_unavailable": "采集方式暂不可用。",
       "browser_encoding": "浏览器编码",
-      "browser_encoding_description": "用于摄像头、麦克风及浏览器屏幕共享，后续连接协商时生效。",
+      "browser_encoding_description": "自动会交换解码能力，按所有连接端的共同支持选择编码，成员加入或离开时重新评估。手动选项作为浏览器协商的首选编码。",
       "native_audio_codec": "原生音频编码"
     },
     "remote_control": {
@@ -349,11 +374,11 @@
       "touch_heading": "触摸",
       "keyboard": {
         "title": "转发键盘输入",
-        "description": "本地光标模式下，点击画面后按对方的键盘布局转发物理按键；捕获模式下，仅在捕获时转发。可通过 Header 中的开关快速关闭。手动打开的软键盘在两种模式下均可使用。"
+        "description": "远程控制连接生效且开关开启时转发实体键盘，无需点击远程画面。本地输入框仍可正常打字，可通过顶部开关随时停止转发。"
       },
       "exit_shortcut": {
         "title": "退出光标和键盘捕获快捷键",
-        "description": "释放键盘输入和已捕获的光标，远控连接保持。关闭键盘转发后仍可使用此快捷键。",
+        "description": "关闭键盘转发并释放已捕获的光标，保留控制连接。重新打开键盘开关即可恢复；关闭转发时仍可使用此快捷键。",
         "browser": "也可按 Escape 释放捕获。",
         "native": "转发系统快捷键时，Escape 会发送到远端，请使用上方快捷键释放输入。",
         "webview": "使用网页按键处理时，也可按 Escape 释放捕获。"
@@ -375,39 +400,46 @@
         "title": "指针行为",
         "local": "本地光标",
         "capture": "捕获并隐藏本地光标",
-        "local_description": "使用本地光标定位远程画面，点击画面后转发键盘输入，可通过 Header 中的键盘开关快速关闭。",
-        "capture_description": "点击远程画面后捕获并隐藏本地光标，仅在捕获时转发物理键盘。使用退出快捷键同时释放光标和键盘，远控连接保持。"
+        "local_description": "使用本地光标定位远程画面。键盘和手柄由各自开关控制，无需点击画面。",
+        "capture_description": "点击远程画面以捕获并隐藏本地光标。键盘和手柄由各自开关控制，无需捕获光标。"
       },
-      "general_heading": "通用",
       "cursor_sync": {
         "title": "同步远端光标样式",
         "description": "在本地光标模式下，跟随远端显示文本、手形、缩放等光标样式。"
-      },
-      "clipboard": {
-        "title": "同步远控剪贴板",
-        "description": "在控制端开启，同步当前环境支持的剪贴板内容。"
-      },
-      "clipboard_files": {
-        "loading": "正在检测剪贴板能力…",
-        "unavailable": "当前环境无法写入文件剪贴板，可选择文件缓存或关闭。",
-        "title": "复制文件时",
-        "clipboard": "剪贴板",
-        "cache": "文件缓存",
-        "off": "关闭",
-        "description": "Web 端通过文件缓存接收文件，Windows 桌面端还可写入剪贴板。目录压缩为 ZIP。"
       },
       "emergency_shortcut": {
         "title": "被控端紧急停止快捷键",
         "description": "仅 Windows 桌面端可用。在本机授予远控权限后响应，即使应用在后台也能停止远控。不独占或拦截按键，其他程序仍可响应相同组合键。",
         "failed": "无法更新紧急停止快捷键监听，已保留原设置，请重试。"
       },
-      "file_drop": {
-        "title": "远程文件拖放",
-        "description": "在控制端开启后，可将文件拖入远端画面。需要 Windows 桌面被控端，目标程序需支持文件拖放。目录会打包为 ZIP。"
+      "gamepad_heading": "手柄",
+      "gamepad": {
+        "title": "转发手柄输入",
+        "description": "远程控制连接生效且开关开启时转发最多 4 个标准布局手柄，无需点击画面。浏览器尚未识别时，请先按一下手柄按键。",
+        "vibration": "震动反馈",
+        "vibration_description": "浏览器支持时，将游戏震动传回已连接的手柄；结束控制时自动停止。",
+        "strength": "震动强度",
+        "dead_zone": "摇杆死区",
+        "dead_zone_description": "忽略摇杆的小幅偏移，减少漂移。"
       },
-      "file_size_limit": {
-        "title": "文件传输大小限制",
-        "description": "拖放与复制粘贴共用，每次操作按文件总大小计算。默认 64 MiB，可设置 1–512 MiB；目录压缩前后均需符合限制。修改对下一次操作生效。"
+      "devices": {
+        "title": "本机输入设备",
+        "description": "查看本机接收远程输入的支持情况。远控结束后，设备会自动释放并卸载。",
+        "keyboard": "键盘",
+        "mouse": "鼠标",
+        "touchpad": "触控板手势",
+        "touchscreen": "触摸屏",
+        "gamepad": "手柄",
+        "available": "可用",
+        "unsupported": "不支持",
+        "driverRequired": "需要驱动",
+        "unavailable": "暂不可用",
+        "error": "无法检测输入设备，请重试。",
+        "driver_description": "Windows 手柄转发需要安装可选驱动。安装时需要管理员确认，Weblink 日常运行无需提权。安装完成后请重新检测。",
+        "install_driver": "安装指南",
+        "driver_retired": "ViGEmBus 已停止维护，不再接收更新。",
+        "checking": "正在检测…",
+        "refresh": "重新检测"
       }
     },
     "permissions": {
@@ -801,10 +833,10 @@
       "obs_audio_setup_tip": "OBS + VB-CABLE 设置：\n1. OBS 设置 → 音频 → 高级 → 监听设备：CABLE Input。\n2. OBS 编辑 → 高级音频属性 → 音频监听：监听并输出。\n3. Weblink 节目音频选择 CABLE Output。",
       "request_camera_permission": "请求摄像头权限",
       "request_microphone_permission": "请求麦克风权限",
-      "select_system_audio_source": "选择系统音频来源（自动）",
-      "select_program_audio": "选择节目音频输入（自动）",
-      "select_microphone": "选择麦克风 (自动)",
-      "select_camera": "选择摄像头 (自动)",
+      "select_system_audio_source": "选择系统音频来源 (系统默认)",
+      "select_program_audio": "选择节目音频输入 (系统默认)",
+      "select_microphone": "选择麦克风 (系统默认)",
+      "select_camera": "选择摄像头 (系统默认)",
       "open_screen": "打开屏幕",
       "open_media_device": "打开媒体设备",
       "current": "当前",
@@ -1082,7 +1114,8 @@
       "windows": "窗口",
       "screen_backend": "屏幕捕获方式",
       "window_backend": "窗口捕获方式",
-      "auto_backend": "自动选择",
+      "auto_backend": "自动",
+      "default_backend": "默认",
       "unavailable": "不可用",
       "search_windows": "搜索窗口",
       "size_unknown": "尺寸未知",
@@ -1291,7 +1324,7 @@
     "keyboard_input": "向远端输入文字",
     "text_too_long": "输入过长，请分段发送。",
     "text_failed": "输入未能完整发送，请检查远端内容后重试。",
-    "system_keyboard_stopped": "系统键盘转发已停止。请重新点击控制画面，或在“远程控制”设置中关闭系统快捷键转发。",
+    "system_keyboard_stopped": "系统键盘转发已停止。请重新打开键盘开关重试，或在远程控制设置中关闭系统快捷键。",
     "capture_failed": "无法捕获指针。请重新点击远程画面，或在“远程控制”设置中选择“本地光标”。",
     "capture_unavailable": "对端不支持指针捕获，请在“远程控制”设置中选择“本地光标”。",
     "capture_hint": "点击捕获指针，按 {{shortcut}} 释放光标和键盘。",
@@ -1304,6 +1337,10 @@
       "completed": "远程文件拖放已完成",
       "failed": "远程文件拖放失败",
       "details": "打开任务列表查看传输详情。"
-    }
+    },
+    "gamepad_enable": "启用手柄转发",
+    "gamepad_disable": "停用手柄转发",
+    "gamepad_unavailable": "被控端暂不支持手柄转发，请检查被控端的远程控制设置。",
+    "gamepad_failed": "远端手柄挂载失败或已停止响应。请检查被控端驱动，然后重新连接手柄。"
   }
 }
